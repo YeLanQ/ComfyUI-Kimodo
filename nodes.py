@@ -93,16 +93,31 @@ def _scan_local_models() -> Dict[str, str]:
     return local_models
 
 
-def _scan_text_encoders() -> List[str]:
-    """Scan text_encoders directory for available encoder folders."""
-    encoders = []
+def _scan_base_models() -> List[str]:
+    """Scan TEXT_ENCODERS_DIR for available base model directories."""
+    base_models = []
     if not os.path.exists(TEXT_ENCODERS_DIR):
-        return encoders
+        return base_models
     for item in os.listdir(TEXT_ENCODERS_DIR):
         item_path = os.path.join(TEXT_ENCODERS_DIR, item)
+        # Check if it's a directory that contains model.safetensors (base model format)
         if os.path.isdir(item_path):
-            encoders.append(item)
-    return sorted(encoders)
+            if os.path.exists(os.path.join(item_path, "model.safetensors")):
+                base_models.append(item)
+    return sorted(base_models)
+
+
+def _scan_adapter_models() -> List[str]:
+    """Scan adapter directory for available adapter model folders."""
+    adapter_models = []
+    adapter_dir = os.path.join(TEXT_ENCODERS_DIR, "adapter")
+    if not os.path.exists(adapter_dir):
+        return adapter_models
+    for item in os.listdir(adapter_dir):
+        item_path = os.path.join(adapter_dir, item)
+        if os.path.isdir(item_path) and item != ".git":
+            adapter_models.append(item)
+    return sorted(adapter_models)
 
 
 def _build_model_choices() -> List[str]:
@@ -113,9 +128,11 @@ def _build_model_choices() -> List[str]:
 
 # Build display name list for dropdown - scan directory only
 _MODEL_CHOICES = _build_model_choices()
-_TEXT_ENCODER_CHOICES = _scan_text_encoders()
+_BASE_MODEL_CHOICES = _scan_base_models()
+_ADAPTER_MODEL_CHOICES = _scan_adapter_models()
 print(f"[Kimodo] Available Kimodo models: {_MODEL_CHOICES}", flush=True)
-print(f"[Kimodo] Available text encoders: {_TEXT_ENCODER_CHOICES}", flush=True)
+print(f"[Kimodo] Available base models: {_BASE_MODEL_CHOICES}", flush=True)
+print(f"[Kimodo] Available adapter models: {_ADAPTER_MODEL_CHOICES}", flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -156,7 +173,8 @@ class Kimodo_LoadModel:
     @classmethod
     def INPUT_TYPES(s):
         model_choices = _MODEL_CHOICES if _MODEL_CHOICES else ["No models found"]
-        text_encoder_choices = _TEXT_ENCODER_CHOICES if _TEXT_ENCODER_CHOICES else ["llm2vec"]
+        base_model_choices = _BASE_MODEL_CHOICES if _BASE_MODEL_CHOICES else ["model.safetensors"]
+        adapter_model_choices = _ADAPTER_MODEL_CHOICES if _ADAPTER_MODEL_CHOICES else ["adapter"]
         
         return {
             "required": {
@@ -166,9 +184,13 @@ class Kimodo_LoadModel:
                 }),
             },
             "optional": {
-                "text_encoder": (text_encoder_choices, {
-                    "default": text_encoder_choices[0],
-                    "tooltip": "Select text encoder from models/llm2vec/ directory."
+                "base_model": (base_model_choices, {
+                    "default": base_model_choices[0],
+                    "tooltip": "Select base text encoder from models/llm2vec/base_model/ directory."
+                }),
+                "adapter_model": (adapter_model_choices, {
+                    "default": adapter_model_choices[0],
+                    "tooltip": "Select adapter model from models/llm2vec/adapter/ directory."
                 }),
             },
         }
@@ -178,21 +200,30 @@ class Kimodo_LoadModel:
     FUNCTION = "load"
     CATEGORY = "Kimodo"
 
-    def load(self, model, text_encoder="llm2vec"):
+    def load(self, model, base_model="base_model", adapter_model="adapter"):
         device = mm.get_torch_device()
         print(f"[Kimodo] Loading model: {model}", flush=True)
 
         # Set CHECKPOINT_DIR to ComfyUI Kimodo models folder
         os.environ["CHECKPOINT_DIR"] = KIMODO_MODELS_DIR
         
-        # Set text encoder directory for LLM2Vec wrapper
-        text_encoder_dir = os.path.join(TEXT_ENCODERS_DIR, text_encoder)
-        if os.path.isdir(text_encoder_dir):
-            os.environ["TEXT_ENCODER_DIR"] = text_encoder_dir
-            print(f"[Kimodo] Using text encoder: {text_encoder_dir}", flush=True)
+        # Set base model directory path
+        base_model_dir = os.path.join(TEXT_ENCODERS_DIR, base_model)
+        if os.path.isdir(base_model_dir):
+            os.environ["TEXT_ENCODER_DIR"] = base_model_dir
+            print(f"[Kimodo] Using base model dir: {base_model_dir}", flush=True)
         else:
             os.environ["TEXT_ENCODER_DIR"] = TEXT_ENCODERS_DIR
-            print(f"[Kimodo] Text encoder folder not found: {text_encoder_dir}, using base dir", flush=True)
+            print(f"[Kimodo] Base model dir not found: {base_model_dir}, using default", flush=True)
+        
+        # Set adapter model path
+        adapter_model_path = os.path.join(TEXT_ENCODERS_DIR, "adapter", adapter_model)
+        if os.path.isdir(adapter_model_path):
+            os.environ["ADAPTER_DIR"] = adapter_model_path
+            print(f"[Kimodo] Using adapter model: {adapter_model_path}", flush=True)
+        else:
+            os.environ["ADAPTER_DIR"] = os.path.join(TEXT_ENCODERS_DIR, "adapter")
+            print(f"[Kimodo] Adapter model not found: {adapter_model_path}, using default", flush=True)
 
         # Load from local directory (models/Kimodo/)
         local_models = _scan_local_models()

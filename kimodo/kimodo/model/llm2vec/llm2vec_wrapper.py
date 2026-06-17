@@ -25,25 +25,23 @@ class LLM2VecEncoder:
 
         cache_dir = os.environ.get("HUGGINGFACE_CACHE_DIR")
 
-        # Priority: TEXT_ENCODER_DIR > TEXT_ENCODERS_DIR > original paths
-        # TEXT_ENCODER_DIR: specific text encoder folder (set by node selection)
+        # Priority: TEXT_ENCODER_DIR + ADAPTER_DIR > TEXT_ENCODERS_DIR > original paths
+        # TEXT_ENCODER_DIR: specific base model directory (set by node selection)
+        # ADAPTER_DIR: specific adapter model folder path (set by node selection)
         # TEXT_ENCODERS_DIR: base text encoders directory
         text_encoder_dir = os.environ.get("TEXT_ENCODER_DIR")
+        adapter_dir = os.environ.get("ADAPTER_DIR")
         text_encoders_dir = os.environ.get("TEXT_ENCODERS_DIR")
         
         if text_encoder_dir and os.path.isdir(text_encoder_dir):
-            # Use specific text encoder directory
-            base = os.path.join(text_encoder_dir, base_model_name_or_path)
-            peft = os.path.join(text_encoder_dir, peft_model_name_or_path)
-            # Check if paths exist, if not try without the original prefix
-            if not os.path.exists(base) and not os.path.exists(peft):
-                # Try direct subfolder in text_encoder_dir
-                base_model_name = os.path.basename(base_model_name_or_path)
+            # TEXT_ENCODER_DIR is a directory - use it as base model path directly
+            base_model_name_or_path = text_encoder_dir
+            # Adapter: use ADAPTER_DIR if set, otherwise try original path
+            if adapter_dir and os.path.isdir(adapter_dir):
+                peft_model_name_or_path = os.path.join(adapter_dir, os.path.basename(peft_model_name_or_path))
+            else:
                 peft_model_name = os.path.basename(peft_model_name_or_path)
-                base = os.path.join(text_encoder_dir, base_model_name)
-                peft = os.path.join(text_encoder_dir, peft_model_name)
-            base_model_name_or_path = base
-            peft_model_name_or_path = peft
+                peft_model_name_or_path = os.path.join(os.path.dirname(text_encoder_dir), "adapter", peft_model_name)
         elif text_encoders_dir and os.path.isdir(text_encoders_dir):
             # Use base text encoders directory
             base_model_name_or_path = os.path.join(text_encoders_dir, base_model_name_or_path)
