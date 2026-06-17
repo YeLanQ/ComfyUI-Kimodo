@@ -2,6 +2,8 @@ import os
 import sys
 import uuid
 from datetime import datetime
+from pathlib import Path
+from typing import List, Dict, Optional
 
 print("[Kimodo] nodes.py: starting imports...", flush=True)
 
@@ -49,16 +51,71 @@ from kimodo.tools import seed_everything
 print("[Kimodo] All imports OK", flush=True)
 
 # ---------------------------------------------------------------------------
-# Constants
+# Constants - Use ComfyUI standard model paths, no hardcoding
 # ---------------------------------------------------------------------------
 KIMODO_MODELS_DIR = os.path.join(folder_paths.models_dir, "Kimodo")
+TEXT_ENCODERS_DIR = os.path.join(folder_paths.models_dir, "text_encoders")
 os.makedirs(KIMODO_MODELS_DIR, exist_ok=True)
+os.makedirs(TEXT_ENCODERS_DIR, exist_ok=True)
 
-# Build display name list for dropdown
-_MODEL_CHOICES = []
-for info in MODEL_INFOS:
-    if info.family == "Kimodo":
-        _MODEL_CHOICES.append(info.display_name)
+# Set TEXT_ENCODERS_DIR for LLM2Vec wrapper to resolve local text encoder paths
+os.environ["TEXT_ENCODERS_DIR"] = TEXT_ENCODERS_DIR
+
+print(f"[Kimodo] Kimodo models dir: {KIMODO_MODELS_DIR}", flush=True)
+print(f"[Kimodo] Text encoders dir: {TEXT_ENCODERS_DIR}", flush=True)
+
+
+def _scan_local_models() -> Dict[str, str]:
+    """Scan Kimodo model directory and return mapping of display_name -> path.
+    
+    Supports both folder-based models (with config.yaml) and single safetensors files.
+    Only scans local directory, no hardcoded registry.
+    """
+    local_models = {}
+    
+    if not os.path.exists(KIMODO_MODELS_DIR):
+        return local_models
+    
+    for item in os.listdir(KIMODO_MODELS_DIR):
+        item_path = os.path.join(KIMODO_MODELS_DIR, item)
+        
+        # Check if it's a folder with config.yaml (official format)
+        if os.path.isdir(item_path):
+            config_path = os.path.join(item_path, "config.yaml")
+            if os.path.exists(config_path):
+                local_models[item] = item_path
+        
+        # Check if it's a safetensors file (user-downloaded format)
+        elif item.endswith(".safetensors"):
+            display_name = item.replace(".safetensors", "")
+            local_models[display_name] = item_path
+    
+    return local_models
+
+
+def _scan_text_encoders() -> List[str]:
+    """Scan text_encoders directory for available encoder folders."""
+    encoders = []
+    if not os.path.exists(TEXT_ENCODERS_DIR):
+        return encoders
+    for item in os.listdir(TEXT_ENCODERS_DIR):
+        item_path = os.path.join(TEXT_ENCODERS_DIR, item)
+        if os.path.isdir(item_path):
+            encoders.append(item)
+    return sorted(encoders)
+
+
+def _build_model_choices() -> List[str]:
+    """Build model choices from local Kimodo directory only (no hardcoded registry)."""
+    local_models = _scan_local_models()
+    return list(local_models.keys())
+
+
+# Build display name list for dropdown - scan directory only
+_MODEL_CHOICES = _build_model_choices()
+_TEXT_ENCODER_CHOICES = _scan_text_encoders()
+print(f"[Kimodo] Available Kimodo models: {_MODEL_CHOICES}", flush=True)
+print(f"[Kimodo] Available text encoders: {_TEXT_ENCODER_CHOICES}", flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -98,10 +155,28 @@ class KimodoMotionData:
 class Kimodo_LoadModel:
     @classmethod
     def INPUT_TYPES(s):
+        model_choices = _MODEL_CHOICES if _MODEL_CHOICES else ["No models found"]
+        text_encoder_choices = _TEXT_ENCODER_CHOICES if _TEXT_ENCODER_CHOICES else ["llm2vec"]
+        
         return {
             "required": {
-                "model": (_MODEL_CHOICES, {"default": _MODEL_CHOICES[0] if _MODEL_CHOICES else "Kimodo-SOMA-RP-v1",
-                                           "tooltip": "Kimodo model variant. Models auto-download from HuggingFace on first use."}),
+                "model": (model_choices, {
+                    "default": model_choices[0],
+                    "tooltip": "Select Kimodo model from models/Kimodo/ directory. "
+                               "Place model folders (with config.yaml) or .safetensors files there."
+                }),
+            },
+            "optional": {
+                "text_encoder": (text_encoder_choices, {
+                    "default": text_encoder_choices[0],
+                    "tooltip": "Select text encoder from models/text_encoders/ directory. "
+                               "Place text encoder folders there (e.g., LLM2Vec models)."
+                }),
+                "custom_model_path": ("STRING", {
+                    "default": "",
+                    "tooltip": "Custom model path (optional). Supports: folder with config.yaml, "
+                               "or .safetensors file path."
+                }),
             },
         }
 
@@ -110,19 +185,145 @@ class Kimodo_LoadModel:
     FUNCTION = "load"
     CATEGORY = "Kimodo"
 
-    def load(self, model):
+    def load(self, model, text_encoder="llm2vec", custom_model_path=""):
         device = mm.get_torch_device()
         print(f"[Kimodo] Loading model: {model}", flush=True)
 
+        # Set CHECKPOINT_DIR to ComfyUI Kimodo models folder (local first)
+        os.environ["CHECKPOINT_DIR"] = KIMODO_MODELS_DIR
+        
+        # Set text encoder directory for LLM2Vec wrapper
+        text_encoder_dir = os.path.join(TEXT_ENCODERS_DIR, text_encoder)
+        if os.path.isdir(text_encoder_dir):
+            os.environ["TEXT_ENCODER_DIR"] = text_encoder_dir
+            print(f"[Kimodo] Using text encoder: {text_encoder_dir}", flush=True)
+        else:
+            # Fallback to TEXT_ENCODERS_DIR
+            os.environ["TEXT_ENCODER_DIR"] = TEXT_ENCODERS_DIR
+            print(f"[Kimodo] Text encoder folder not found: {text_encoder_dir}, using base dir", flush=True)
+
+        # Check if custom path is provided
+        if custom_model_path and custom_model_path.strip():
+            custom_path = custom_model_path.strip()
+            print(f"[Kimodo] Using custom model path: {custom_path}", flush=True)
+            
+            resolved_path = self._resolve_model_path(custom_path)
+            if resolved_path:
+                return self._load_from_path(resolved_path, device)
+            else:
+                print(f"[Kimodo] Custom path not found, falling back to local: {custom_path}", flush=True)
+
+        # Load from local directory (models/Kimodo/)
+        local_models = _scan_local_models()
+        if model in local_models:
+            local_path = local_models[model]
+            print(f"[Kimodo] Found local model: {model} at {local_path}", flush=True)
+            
+            if os.path.isdir(local_path):
+                # Folder model - CHECKPOINT_DIR already set
+                return self._load_from_local(model, device)
+            elif local_path.endswith(".safetensors"):
+                return self._load_from_safetensors(local_path, model, device)
+
+        # Model not found locally - raise error (no auto-download)
+        available = list(local_models.keys()) if local_models else ["No models found"]
+        raise FileNotFoundError(
+            f"Model '{model}' not found in {KIMODO_MODELS_DIR}. "
+            f"Available local models: {available}. "
+            f"Please download models to {KIMODO_MODELS_DIR} first."
+        )
+
+    def _resolve_model_path(self, path_str: str) -> Optional[str]:
+        """Resolve model path: absolute, relative to Kimodo models dir, or input dir."""
+        if not path_str:
+            return None
+        
+        path = path_str.strip().replace("\\", "/")
+        
+        # Absolute path
+        if os.path.isabs(path):
+            if os.path.exists(path):
+                return path
+        
+        # Relative to Kimodo models directory
+        kimodo_path = os.path.join(KIMODO_MODELS_DIR, path)
+        if os.path.exists(kimodo_path):
+            return kimodo_path
+        
+        # Relative to ComfyUI input directory
+        input_path = os.path.join(folder_paths.get_input_directory(), path)
+        if os.path.exists(input_path):
+            return input_path
+        
+        return None
+
+    def _load_from_path(self, model_path: str, device) -> tuple:
+        """Load model from a specific path."""
+        model_path = Path(model_path)
+        
+        if model_path.suffix == ".safetensors":
+            return self._load_from_safetensors(str(model_path), model_path.stem, device)
+        
+        if model_path.is_dir():
+            config_path = model_path / "config.yaml"
+            if config_path.exists():
+                os.environ["CHECKPOINT_DIR"] = str(model_path.parent)
+                model_name = model_path.name
+                return self._load_from_local(model_name, device)
+        
+        raise FileNotFoundError(f"Invalid model path: {model_path}")
+
+    def _load_from_safetensors(self, safetensors_path: str, model_name: str, device) -> tuple:
+        """Load model directly from safetensors file."""
+        print(f"[Kimodo] Loading from safetensors: {safetensors_path}", flush=True)
+        
+        from safetensors.torch import load_file
+        state_dict = load_file(safetensors_path)
+        
+        # Try to find matching model in registry for config
+        from kimodo.model.registry import get_short_key_from_display_name
+        
+        short_key = get_short_key_from_display_name(model_name)
+        if short_key:
+            kimodo_model, resolved = load_model(
+                short_key, device=str(device), return_resolved_name=True
+            )
+            try:
+                kimodo_model.load_state_dict(state_dict, strict=False)
+                print(f"[Kimodo] Loaded safetensors weights into model", flush=True)
+            except Exception as e:
+                print(f"[Kimodo] Warning: Could not load safetensors weights: {e}", flush=True)
+            
+            info = get_model_info(resolved)
+            display = info.display_name if info else resolved
+            print(f"[Kimodo] Model loaded: {display} (skeleton={kimodo_model.skeleton.name}, fps={kimodo_model.fps})", flush=True)
+            return (kimodo_model,)
+        
+        # No registry match, try default config
+        print(f"[Kimodo] No registry match for {model_name}, trying default config", flush=True)
+        kimodo_model, resolved = load_model(
+            "kimodo-soma-rp", device=str(device), return_resolved_name=True
+        )
+        
+        try:
+            kimodo_model.load_state_dict(state_dict, strict=False)
+            print(f"[Kimodo] Loaded safetensors weights with default config", flush=True)
+        except Exception as e:
+            print(f"[Kimodo] Warning: Could not load safetensors weights: {e}", flush=True)
+        
+        info = get_model_info(resolved)
+        display = info.display_name if info else resolved
+        print(f"[Kimodo] Model loaded: {display} (skeleton={kimodo_model.skeleton.name}, fps={kimodo_model.fps})", flush=True)
+        return (kimodo_model,)
+
+    def _load_from_local(self, model: str, device) -> tuple:
+        """Load model from local directory."""
         # Resolve display name to short key
         from kimodo.model.registry import get_short_key_from_display_name
         short_key = get_short_key_from_display_name(model)
         if short_key is None:
+            # Try the model name directly as short_key
             short_key = model
-
-        # Set CHECKPOINT_DIR to ComfyUI models folder if models exist there
-        if os.path.isdir(os.path.join(KIMODO_MODELS_DIR, model)):
-            os.environ["CHECKPOINT_DIR"] = KIMODO_MODELS_DIR
 
         kimodo_model, resolved = load_model(
             short_key, device=str(device), return_resolved_name=True
@@ -716,11 +917,90 @@ class Kimodo_PostProcess:
 
 
 # ---------------------------------------------------------------------------
+# Node: Kimodo Configuration
+# ---------------------------------------------------------------------------
+class Kimodo_Config:
+    """Configuration node for Kimodo model and text encoder settings."""
+    
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "text_encoder_mode": (["local", "api", "auto"], {
+                    "default": "local",
+                    "tooltip": "Text encoder mode: 'local' uses local LLM2Vec (default), "
+                               "'api' uses remote API, 'auto' tries API then local"
+                }),
+            },
+            "optional": {
+                "text_encoder_url": ("STRING", {
+                    "default": "http://127.0.0.1:9550/",
+                    "tooltip": "URL for remote text encoder API (used when mode is 'api' or 'auto')"
+                }),
+                "custom_models_dir": ("STRING", {
+                    "default": "",
+                    "tooltip": "Custom directory for Kimodo models (optional). "
+                               "Leave empty to use default models/Kimodo/ directory."
+                }),
+                "custom_text_encoders_dir": ("STRING", {
+                    "default": "",
+                    "tooltip": "Custom directory for text encoders (optional). "
+                               "Leave empty to use default models/text_encoders/ directory."
+                }),
+            },
+        }
+
+    RETURN_TYPES = ("KIMODO_CONFIG",)
+    RETURN_NAMES = ("config",)
+    FUNCTION = "configure"
+    CATEGORY = "Kimodo/Configuration"
+
+    def configure(self, text_encoder_mode="local", text_encoder_url="http://127.0.0.1:9550/", 
+                  custom_models_dir="", custom_text_encoders_dir=""):
+        # Set environment variables for text encoder configuration
+        os.environ["TEXT_ENCODER_MODE"] = text_encoder_mode
+        os.environ["TEXT_ENCODER_URL"] = text_encoder_url
+        
+        # Set custom models directory if provided
+        if custom_models_dir and custom_models_dir.strip():
+            custom_dir = custom_models_dir.strip()
+            if os.path.isdir(custom_dir):
+                os.environ["CHECKPOINT_DIR"] = custom_dir
+                print(f"[Kimodo] Set custom models directory: {custom_dir}", flush=True)
+            else:
+                print(f"[Kimodo] Warning: Custom models directory not found: {custom_dir}", flush=True)
+        
+        # Set custom text encoders directory if provided
+        if custom_text_encoders_dir and custom_text_encoders_dir.strip():
+            custom_te_dir = custom_text_encoders_dir.strip()
+            if os.path.isdir(custom_te_dir):
+                os.environ["TEXT_ENCODERS_DIR"] = custom_te_dir
+                os.environ["TEXT_ENCODER_DIR"] = custom_te_dir
+                print(f"[Kimodo] Set custom text encoders directory: {custom_te_dir}", flush=True)
+            else:
+                print(f"[Kimodo] Warning: Custom text encoders directory not found: {custom_te_dir}", flush=True)
+        
+        config = {
+            "text_encoder_mode": text_encoder_mode,
+            "text_encoder_url": text_encoder_url,
+            "custom_models_dir": custom_models_dir,
+            "custom_text_encoders_dir": custom_text_encoders_dir,
+        }
+        
+        print(f"[Kimodo] Configuration: text_encoder_mode={text_encoder_mode}, "
+              f"text_encoder_url={text_encoder_url}", flush=True)
+        
+        return (config,)
+
+
+# ---------------------------------------------------------------------------
 # Node mappings
 # ---------------------------------------------------------------------------
 NODE_CLASS_MAPPINGS = {
     # Loaders
     "Kimodo_LoadModel": Kimodo_LoadModel,
+    # Configuration
+    "Kimodo_Config": Kimodo_Config,
     # Conditioning
     "Kimodo_TextEncode": Kimodo_TextEncode,
     # Sampling
@@ -738,6 +1018,7 @@ NODE_CLASS_MAPPINGS = {
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "Kimodo_LoadModel": "Kimodo Load Model",
+    "Kimodo_Config": "Kimodo Configuration",
     "Kimodo_TextEncode": "Kimodo Text Encode",
     "Kimodo_Sampler": "Kimodo Sampler",
     "Kimodo_PostProcess": "Kimodo Post Process",

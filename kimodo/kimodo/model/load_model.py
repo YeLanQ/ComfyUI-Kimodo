@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Load Kimodo diffusion models from local checkpoints or Hugging Face."""
 
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -64,27 +65,52 @@ def _build_api_text_encoder_conf(text_encoder_url: str) -> dict:
     }
 
 
-def _build_local_text_encoder_conf() -> dict:
+def _build_local_text_encoder_conf(text_encoder_dir: Optional[str] = None) -> dict:
+    """Build local text encoder configuration.
+    
+    Args:
+        text_encoder_dir: Optional custom directory for text encoder models.
+                        If provided, model paths are resolved relative to this directory.
+                        If None, uses TEXT_ENCODERS_DIR env var or default paths.
+    """
     text_encoder_name = get_env_var("TEXT_ENCODER", DEFAULT_TEXT_ENCODER)
     if text_encoder_name not in TEXT_ENCODER_PRESETS:
         available = ", ".join(sorted(TEXT_ENCODER_PRESETS))
         raise ValueError(f"Unknown TEXT_ENCODER='{text_encoder_name}'. Available: {available}")
 
     preset = TEXT_ENCODER_PRESETS[text_encoder_name]
+    kwargs = dict(preset["kwargs"])
+    
+    # Use custom text encoder directory if provided
+    if text_encoder_dir:
+        base = kwargs["base_model_name_or_path"]
+        peft = kwargs["peft_model_name_or_path"]
+        # Only prepend if not already absolute
+        if not os.path.isabs(base):
+            kwargs["base_model_name_or_path"] = os.path.join(text_encoder_dir, base)
+        if not os.path.isabs(peft):
+            kwargs["peft_model_name_or_path"] = os.path.join(text_encoder_dir, peft)
+    
     return {
         "_target_": preset["target"],
-        **preset["kwargs"],
+        **kwargs,
     }
 
 
-def _select_text_encoder_conf(text_encoder_url: str) -> dict:
+def _select_text_encoder_conf(text_encoder_url: str, text_encoder_dir: Optional[str] = None) -> dict:
+    """Select text encoder configuration based on mode.
+    
+    Args:
+        text_encoder_url: URL for remote text encoder API.
+        text_encoder_dir: Optional custom directory for local text encoder models.
+    """
     # TEXT_ENCODER_MODE options:
     # - "api": force TextEncoderAPI
     # - "local": force local LLM2VecEncoder
     # - "auto": try API first, fallback to local if unreachable
     mode = get_env_var("TEXT_ENCODER_MODE", "auto").lower()
     if mode == "local":
-        return _build_local_text_encoder_conf()
+        return _build_local_text_encoder_conf(text_encoder_dir)
     if mode == "api":
         return _build_api_text_encoder_conf(text_encoder_url)
 
@@ -99,7 +125,7 @@ def _select_text_encoder_conf(text_encoder_url: str) -> dict:
             "Text encoder service is unreachable, falling back to local LLM2Vec "
             f"encoder. ({type(error).__name__}: {error})"
         )
-        return _build_local_text_encoder_conf()
+        return _build_local_text_encoder_conf(text_encoder_dir)
 
 
 def load_model(
@@ -108,6 +134,7 @@ def load_model(
     eval_mode: bool = True,
     default_family: Optional[str] = "Kimodo",
     return_resolved_name: bool = False,
+    text_encoder_dir: Optional[str] = None,
 ):
     """Load a kimodo model by name (e.g. 'g1', 'soma').
 
@@ -126,6 +153,8 @@ def load_model(
             Default "Kimodo".
         return_resolved_name: If True, return (model, resolved_short_key). If False,
             return only the model.
+        text_encoder_dir: Optional custom directory for text encoder models.
+            If provided, text encoder will be loaded from this directory.
 
     Returns:
         Loaded model in eval mode, or (model, resolved short key) if
@@ -137,19 +166,12 @@ def load_model(
     """
     if modelname is None:
         modelname = DEFAULT_MODEL
-    if modelname not in AVAILABLE_MODELS:
-        if default_family is not None:
-            modelname = resolve_model_name(modelname, default_family)
-        else:
-            raise ValueError(
-                f"""The model is not recognized.
-            Please choose between: {AVAILABLE_MODELS}"""
-            )
 
+    # First, try to find model locally (before registry validation)
+    configured_checkpoint_dir = get_env_var("CHECKPOINT_DIR")
+    model_path = None
     resolved_modelname = modelname
 
-    # In case, we specify a custom checkpoint directory
-    configured_checkpoint_dir = get_env_var("CHECKPOINT_DIR")
     if configured_checkpoint_dir:
         print(f"CHECKPOINT_DIR is set to {configured_checkpoint_dir}, checking the local cache...")
         # Checkpoint folders are named by display name (e.g. Kimodo-SOMA-RP-v1)
@@ -160,10 +182,24 @@ def load_model(
             # Fallback: try short_key for backward compatibility
             model_path = Path(configured_checkpoint_dir) / modelname
         if not model_path.exists():
-            print(f"Model folder not found at '{model_path}', downloading it from Hugging Face...")
-            model_path = _resolve_hf_model_path(modelname)
+            model_path = None
+
+    if model_path and model_path.exists():
+        # Model found locally - use it directly
+        print(f"Found local model at '{model_path}'")
+        resolved_modelname = modelname
     else:
-        # Otherwise, we load the model from the local cache or download it from Hugging Face.
+        # Not found locally - try registry resolution
+        if modelname not in AVAILABLE_MODELS:
+            if default_family is not None:
+                modelname = resolve_model_name(modelname, default_family)
+            else:
+                raise ValueError(
+                    f"""The model is not recognized.
+                Please choose between: {AVAILABLE_MODELS}"""
+                )
+        resolved_modelname = modelname
+        # Try to download from HuggingFace
         model_path = _resolve_hf_model_path(modelname)
 
     model_config_path = model_path / "config.yaml"
@@ -177,10 +213,14 @@ def load_model(
         pass
 
     text_encoder_url = get_env_var("TEXT_ENCODER_URL", DEFAULT_TEXT_ENCODER_URL)
+    
+    # Use custom text_encoder_dir if provided, otherwise check env var
+    effective_te_dir = text_encoder_dir or get_env_var("TEXT_ENCODER_DIR")
+    
     runtime_conf = OmegaConf.create(
         {
             "checkpoint_dir": str(model_path),
-            "text_encoder": _select_text_encoder_conf(text_encoder_url),
+            "text_encoder": _select_text_encoder_conf(text_encoder_url, effective_te_dir),
         }
     )
     model_cfg = OmegaConf.to_container(OmegaConf.merge(model_conf, runtime_conf), resolve=True)
