@@ -146,6 +146,7 @@ class LLM2Vec(nn.Module):
             model = PeftModel.from_pretrained(
                 model,
                 base_model_name_or_path,
+                ignore_mismatched_sizes=True,
             )
             model = model.merge_and_unload()
 
@@ -153,6 +154,7 @@ class LLM2Vec(nn.Module):
             model = PeftModel.from_pretrained(
                 model,
                 peft_model_name_or_path,
+                ignore_mismatched_sizes=True,
             )
             if merge_peft:
                 model = model.merge_and_unload()
