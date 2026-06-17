@@ -54,7 +54,7 @@ print("[Kimodo] All imports OK", flush=True)
 # Constants - Use ComfyUI standard model paths, no hardcoding
 # ---------------------------------------------------------------------------
 KIMODO_MODELS_DIR = os.path.join(folder_paths.models_dir, "Kimodo")
-TEXT_ENCODERS_DIR = os.path.join(folder_paths.models_dir, "text_encoders")
+TEXT_ENCODERS_DIR = os.path.join(folder_paths.models_dir, "llm2vec")
 os.makedirs(KIMODO_MODELS_DIR, exist_ok=True)
 os.makedirs(TEXT_ENCODERS_DIR, exist_ok=True)
 
