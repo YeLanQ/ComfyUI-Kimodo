@@ -61,8 +61,13 @@ os.makedirs(TEXT_ENCODERS_DIR, exist_ok=True)
 # Set TEXT_ENCODERS_DIR for LLM2Vec wrapper to resolve local text encoder paths
 os.environ["TEXT_ENCODERS_DIR"] = TEXT_ENCODERS_DIR
 
+# Set HuggingFace cache to Kimodo models dir to avoid network downloads
+if "HF_HOME" not in os.environ:
+    os.environ["HF_HOME"] = KIMODO_MODELS_DIR
+
 print(f"[Kimodo] Kimodo models dir: {KIMODO_MODELS_DIR}", flush=True)
 print(f"[Kimodo] Text encoders dir: {TEXT_ENCODERS_DIR}", flush=True)
+print(f"[Kimodo] HF_HOME: {os.environ.get('HF_HOME', 'not set')}", flush=True)
 
 
 def _scan_local_models() -> Dict[str, str]:

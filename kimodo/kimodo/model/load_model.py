@@ -35,27 +35,43 @@ TEXT_ENCODER_PRESETS = {
 
 
 def _resolve_hf_model_path(modelname: str) -> Path:
-    """Resolve model name to a local path, using Hugging Face cache or CHECKPOINT_DIR."""
+    """Resolve model name to a local path, using CHECKPOINT_DIR or Hugging Face cache."""
     try:
         repo_id = MODEL_NAMES[modelname]
     except KeyError:
         raise ValueError(f"Model '{modelname}' not found. Available models: {MODEL_NAMES.keys()}")
 
-    local_cache = get_env_var("LOCAL_CACHE", "False").lower() == "true"
-    if not local_cache:
-        snapshot_dir = snapshot_download(repo_id=repo_id)  # will check online no matter what
-        return Path(snapshot_dir)
+    # 1. First, check CHECKPOINT_DIR for local model
+    configured_checkpoint_dir = get_env_var("CHECKPOINT_DIR")
+    if configured_checkpoint_dir:
+        info = get_model_info(modelname)
+        checkpoint_folder_name = info.display_name if info is not None else modelname
+        local_path = Path(configured_checkpoint_dir) / checkpoint_folder_name
+        if local_path.exists() and (local_path / "config.yaml").exists():
+            print(f"Found local model in CHECKPOINT_DIR: {local_path}")
+            return local_path
+        # Fallback: try short_key
+        local_path = Path(configured_checkpoint_dir) / modelname
+        if local_path.exists() and (local_path / "config.yaml").exists():
+            print(f"Found local model in CHECKPOINT_DIR: {local_path}")
+            return local_path
 
+    # 2. Check HuggingFace local cache (no network)
     try:
-        snapshot_dir = snapshot_download(repo_id=repo_id, local_files_only=True)  # will check local cache only
+        snapshot_dir = snapshot_download(repo_id=repo_id, local_files_only=True)
         return Path(snapshot_dir)
     except Exception:
-        # if local cache is not found, download from online
-        try:
-            snapshot_dir = snapshot_download(repo_id=repo_id)
-            return Path(snapshot_dir)
-        except Exception:
-            raise RuntimeError(f"Could not resolve model '{modelname}' from Hugging Face (repo: {repo_id}). ") from None
+        pass
+
+    # 3. Download from HuggingFace (last resort)
+    try:
+        snapshot_dir = snapshot_download(repo_id=repo_id)
+        return Path(snapshot_dir)
+    except Exception:
+        raise RuntimeError(
+            f"Could not resolve model '{modelname}' from Hugging Face (repo: {repo_id}). "
+            f"Please download the model to {configured_checkpoint_dir or 'models/Kimodo'}."
+        ) from None
 
 
 def _build_api_text_encoder_conf(text_encoder_url: str) -> dict:

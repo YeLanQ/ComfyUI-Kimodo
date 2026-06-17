@@ -23,8 +23,6 @@ class LLM2VecEncoder:
         torch_dtype = getattr(torch, dtype)
         self.llm_dim = llm_dim
 
-        cache_dir = os.environ.get("HUGGINGFACE_CACHE_DIR")
-
         # Priority: TEXT_ENCODER_DIR + ADAPTER_DIR > TEXT_ENCODERS_DIR > original paths
         # TEXT_ENCODER_DIR: specific base model directory (set by node selection)
         # ADAPTER_DIR: specific adapter model folder path (set by node selection)
@@ -52,10 +50,17 @@ class LLM2VecEncoder:
                         peft_model_name_or_path = adapter_dir
             else:
                 peft_model_name_or_path = os.path.join(os.path.dirname(text_encoder_dir), "adapter", os.path.basename(peft_model_name_or_path))
+            # Use local paths directly, no cache needed
+            cache_dir = None
         elif text_encoders_dir and os.path.isdir(text_encoders_dir):
             # Use base text encoders directory
             base_model_name_or_path = os.path.join(text_encoders_dir, base_model_name_or_path)
             peft_model_name_or_path = os.path.join(text_encoders_dir, peft_model_name_or_path)
+            # Use local paths directly, no cache needed
+            cache_dir = None
+        else:
+            # Fallback to HuggingFace cache
+            cache_dir = os.environ.get("HF_HOME", os.path.join(os.path.expanduser("~"), ".cache", "huggingface"))
 
         self.model = LLM2Vec.from_pretrained(
             base_model_name_or_path=base_model_name_or_path,
