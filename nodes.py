@@ -115,8 +115,10 @@ def _scan_adapter_models() -> List[str]:
         return adapter_models
     for item in os.listdir(adapter_dir):
         item_path = os.path.join(adapter_dir, item)
+        # Check if it's a directory that contains adapter_config.json
         if os.path.isdir(item_path) and item != ".git":
-            adapter_models.append(item)
+            if os.path.exists(os.path.join(item_path, "adapter_config.json")):
+                adapter_models.append(item)
     return sorted(adapter_models)
 
 

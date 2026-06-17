@@ -38,10 +38,20 @@ class LLM2VecEncoder:
             base_model_name_or_path = text_encoder_dir
             # Adapter: use ADAPTER_DIR if set, otherwise try original path
             if adapter_dir and os.path.isdir(adapter_dir):
-                peft_model_name_or_path = os.path.join(adapter_dir, os.path.basename(peft_model_name_or_path))
+                # Check if adapter_dir already contains adapter_config.json
+                if os.path.isfile(os.path.join(adapter_dir, "adapter_config.json")):
+                    peft_model_name_or_path = adapter_dir
+                else:
+                    # Try to find the actual adapter config inside subdirectories
+                    for item in os.listdir(adapter_dir):
+                        sub = os.path.join(adapter_dir, item)
+                        if os.path.isdir(sub) and os.path.isfile(os.path.join(sub, "adapter_config.json")):
+                            peft_model_name_or_path = sub
+                            break
+                    else:
+                        peft_model_name_or_path = adapter_dir
             else:
-                peft_model_name = os.path.basename(peft_model_name_or_path)
-                peft_model_name_or_path = os.path.join(os.path.dirname(text_encoder_dir), "adapter", peft_model_name)
+                peft_model_name_or_path = os.path.join(os.path.dirname(text_encoder_dir), "adapter", os.path.basename(peft_model_name_or_path))
         elif text_encoders_dir and os.path.isdir(text_encoders_dir):
             # Use base text encoders directory
             base_model_name_or_path = os.path.join(text_encoders_dir, base_model_name_or_path)
