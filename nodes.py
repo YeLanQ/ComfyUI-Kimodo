@@ -889,6 +889,9 @@ class Kimodo_Config:
     
     @classmethod
     def INPUT_TYPES(s):
+        base_model_choices = _BASE_MODEL_CHOICES if _BASE_MODEL_CHOICES else ["base_model"]
+        adapter_model_choices = _ADAPTER_MODEL_CHOICES if _ADAPTER_MODEL_CHOICES else ["adapter"]
+        
         return {
             "required": {
                 "text_encoder_mode": (["local", "api", "auto"], {
@@ -898,6 +901,14 @@ class Kimodo_Config:
                 }),
             },
             "optional": {
+                "base_model": (base_model_choices, {
+                    "default": base_model_choices[0],
+                    "tooltip": "Select base text encoder from models/llm2vec/ directory."
+                }),
+                "adapter_model": (adapter_model_choices, {
+                    "default": adapter_model_choices[0],
+                    "tooltip": "Select adapter model from models/llm2vec/adapter/ directory."
+                }),
                 "text_encoder_url": ("STRING", {
                     "default": "http://127.0.0.1:9550/",
                     "tooltip": "URL for remote text encoder API (used when mode is 'api' or 'auto')"
@@ -910,12 +921,33 @@ class Kimodo_Config:
     FUNCTION = "configure"
     CATEGORY = "Kimodo/Configuration"
 
-    def configure(self, text_encoder_mode="local", text_encoder_url="http://127.0.0.1:9550/"):
+    def configure(self, text_encoder_mode="local", base_model="base_model", 
+                  adapter_model="adapter", text_encoder_url="http://127.0.0.1:9550/"):
         os.environ["TEXT_ENCODER_MODE"] = text_encoder_mode
         os.environ["TEXT_ENCODER_URL"] = text_encoder_url
         
+        # Set base model directory path
+        base_model_dir = os.path.join(TEXT_ENCODERS_DIR, base_model)
+        if os.path.isdir(base_model_dir):
+            os.environ["TEXT_ENCODER_DIR"] = base_model_dir
+            print(f"[Kimodo] Configuration: base model dir = {base_model_dir}", flush=True)
+        else:
+            os.environ["TEXT_ENCODER_DIR"] = TEXT_ENCODERS_DIR
+            print(f"[Kimodo] Configuration: base model dir not found, using default", flush=True)
+        
+        # Set adapter model path
+        adapter_model_path = os.path.join(TEXT_ENCODERS_DIR, "adapter", adapter_model)
+        if os.path.isdir(adapter_model_path):
+            os.environ["ADAPTER_DIR"] = adapter_model_path
+            print(f"[Kimodo] Configuration: adapter model = {adapter_model_path}", flush=True)
+        else:
+            os.environ["ADAPTER_DIR"] = os.path.join(TEXT_ENCODERS_DIR, "adapter")
+            print(f"[Kimodo] Configuration: adapter model not found, using default", flush=True)
+        
         config = {
             "text_encoder_mode": text_encoder_mode,
+            "base_model": base_model,
+            "adapter_model": adapter_model,
             "text_encoder_url": text_encoder_url,
         }
         
