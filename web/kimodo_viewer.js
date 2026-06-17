@@ -86,7 +86,7 @@ function resize() {
 
 function clearScene() {
   jointMeshes.forEach(m => scene.remove(m));
-  boneMeshes.forEach(m => scene.remove(m));
+  boneMeshes.forEach(b => scene.remove(b.mesh));
   jointMeshes = [];
   boneMeshes = [];
 }
@@ -163,6 +163,12 @@ requestAnimationFrame(animate);
 window.addEventListener('message', (e) => {
   if (e.data?.type === 'RESIZE') { resize(); return; }
   if (e.data?.type === 'LOAD_MOTION') {
+    // Stop current animation and clear state
+    playing = false;
+    playBtn.textContent = '▶';
+    currentFrame = 0;
+    lastTime = 0;
+    
     const d = e.data.motionData;
     motionData = {
       joints: new Float32Array(d.joints),
@@ -175,7 +181,7 @@ window.addEventListener('message', (e) => {
 
     buildSkeleton(motionData.numJoints, motionData.parents);
     slider.max = motionData.numFrames - 1;
-    currentFrame = 0;
+    slider.value = 0;
     playing = true;
     playBtn.textContent = '⏸';
     lastTime = performance.now();
