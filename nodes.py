@@ -1850,8 +1850,8 @@ class Kimodo_MotionPath:
                 "auto_canonicalize": ("BOOLEAN", {
                     "default": True,
                     "tooltip": (
-                        "Offset all positions so the first waypoint "
-                        "is at (0,0). Keeps motion centered at origin."
+                        "Offset X and Z so the first waypoint is at (0,0). "
+                        "Y (height) is preserved as-is. Keeps motion centered at origin."
                     ),
                 }),
                 "compute_heading": ("BOOLEAN", {
@@ -1944,7 +1944,7 @@ class Kimodo_MotionPath:
             frac = i / (num_waypoints - 1) if num_waypoints > 1 else 0.0
             kf = start_frame + round(frac * total_frames)
             frame_indices.append(kf)
-            smooth_root_2d.append([wps[i][0] - ox, wps[i][2] - oz])
+            smooth_root_2d.append([wps[i][0] - ox, wps[i][1], wps[i][2] - oz])
             global_root_heading.append([math.cos(headings[i]), math.sin(headings[i])])
 
         # 7. Build constraint dict

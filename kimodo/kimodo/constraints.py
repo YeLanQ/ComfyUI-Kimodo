@@ -74,7 +74,8 @@ def _tensor_to(
 
 class Root2DConstraintSet:
     """Constraint set fixing root (x, z) trajectory and optionally global heading on given
-    frames."""
+    frames. Supports 3D input (x, y, z) which is split into smooth_root_2d (x, z)
+    and root_y_pos (y)."""
 
     name = "root2d"
 
@@ -85,38 +86,50 @@ class Root2DConstraintSet:
         smooth_root_2d: Tensor,
         to_crop: bool = False,
         global_root_heading: Optional[Tensor] = None,
+        root_y_pos: Optional[Tensor] = None,
     ) -> None:
         self.skeleton = skeleton
 
-        # if we pass the full smooth root 3D as input
+        # if we pass the full smooth root 3D as input, split into xz and y
         if smooth_root_2d.shape[-1] == 3:
-            smooth_root_2d = smooth_root_2d[..., [0, 1]]
+            root_y_pos = smooth_root_2d[..., 1]
+            smooth_root_2d = smooth_root_2d[..., [0, 2]]
 
         if to_crop:
             smooth_root_2d = smooth_root_2d[frame_indices]
+            if root_y_pos is not None:
+                root_y_pos = root_y_pos[frame_indices]
             if global_root_heading is not None:
                 global_root_heading = global_root_heading[frame_indices]
         else:
             assert len(smooth_root_2d) == len(
                 frame_indices
             ), "The number of smooth root 2d should be match the number of frames"
+            if root_y_pos is not None:
+                assert len(root_y_pos) == len(
+                    frame_indices
+                ), "The number of root_y_pos should match the number of frames"
             if global_root_heading is not None:
                 assert len(global_root_heading) == len(
                     frame_indices
                 ), "The number of global root heading should be match the number of frames"
 
         self.smooth_root_2d = smooth_root_2d
+        self.root_y_pos = root_y_pos
         self.global_root_heading = global_root_heading
         self.frame_indices = frame_indices
 
     def update_constraints(self, data_dict: dict, index_dict: dict) -> None:
-        """Append this constraint's smooth_root_2d (and optional global_root_heading) to data/index
-        dicts."""
+        """Append this constraint's smooth_root_2d (and optional root_y_pos and
+        global_root_heading) to data/index dicts."""
         data_dict["smooth_root_2d"].append(self.smooth_root_2d)
         index_dict["smooth_root_2d"].append(self.frame_indices)
 
+        if self.root_y_pos is not None:
+            data_dict["root_y_pos"].append(self.root_y_pos)
+            index_dict["root_y_pos"].append(self.frame_indices)
+
         if self.global_root_heading is not None:
-            # constraint the global heading
             data_dict["global_root_heading"].append(self.global_root_heading)
             index_dict["global_root_heading"].append(self.frame_indices)
 
@@ -129,21 +142,29 @@ class Root2DConstraintSet:
         else:
             masked_global_root_heading = None
 
+        if self.root_y_pos is not None:
+            masked_root_y_pos = self.root_y_pos[mask]
+        else:
+            masked_root_y_pos = None
+
         return Root2DConstraintSet(
             self.skeleton,
             self.frame_indices[mask] - start,
             self.smooth_root_2d[mask],
             global_root_heading=masked_global_root_heading,
+            root_y_pos=masked_root_y_pos,
         )
 
     def get_save_info(self) -> dict:
         """Return a dict suitable for JSON serialization (frame_indices, smooth_root_2d, optional
-        global_root_heading)."""
+        root_y_pos and global_root_heading)."""
         out = {
             "type": self.name,
             "frame_indices": self.frame_indices,
             "smooth_root_2d": self.smooth_root_2d,
         }
+        if self.root_y_pos is not None:
+            out["root_y_pos"] = self.root_y_pos
         if self.global_root_heading is not None:
             out["global_root_heading"] = self.global_root_heading
         return out
@@ -155,6 +176,8 @@ class Root2DConstraintSet:
     ) -> "Root2DConstraintSet":
         self.smooth_root_2d = _tensor_to(self.smooth_root_2d, device, dtype)
         self.frame_indices = _tensor_to(self.frame_indices, device, dtype)
+        if self.root_y_pos is not None:
+            self.root_y_pos = _tensor_to(self.root_y_pos, device, dtype)
         if self.global_root_heading is not None:
             self.global_root_heading = _tensor_to(self.global_root_heading, device, dtype)
         if device is not None and hasattr(self.skeleton, "to"):
@@ -166,6 +189,11 @@ class Root2DConstraintSet:
         """Build a Root2DConstraintSet from a dict (e.g. loaded from JSON)."""
         device = skeleton.device if hasattr(skeleton, "device") else "cpu"
 
+        if "root_y_pos" in dico:
+            root_y_pos = torch.tensor(dico["root_y_pos"], device=device)
+        else:
+            root_y_pos = None
+
         if "global_root_heading" in dico:
             global_root_heading = torch.tensor(dico["global_root_heading"], device=device)
         else:
@@ -176,6 +204,7 @@ class Root2DConstraintSet:
             frame_indices=torch.tensor(dico["frame_indices"]),
             smooth_root_2d=torch.tensor(dico["smooth_root_2d"], device=device),
             global_root_heading=global_root_heading,
+            root_y_pos=root_y_pos,
         )
 
 

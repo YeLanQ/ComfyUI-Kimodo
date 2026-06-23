@@ -70,7 +70,8 @@ def extract_input_motion_from_constraints(
                 continue
             frame_indices = [frame_indices[i] for i in valid_positions]
 
-        # Handle Root2DConstraintSet separately - only assign smooth_root_2d at xz dimensions
+        # Handle Root2DConstraintSet separately - assign smooth_root_2d at xz dimensions
+        # and optionally root_y_pos at y dimension (3D constraint)
         if isinstance(constraint, Root2DConstraintSet):
             smooth_root_2d = constraint.smooth_root_2d  # (K, 2) where K = len(frame_indices)
             if isinstance(frame_indices, torch.Tensor):
@@ -80,6 +81,16 @@ def extract_input_motion_from_constraints(
             smooth_root_2d = _match_hip_dtype(smooth_root_2d)
             hip_translations_input[frame_indices, 0] = smooth_root_2d[:, 0]  # x
             hip_translations_input[frame_indices, 2] = smooth_root_2d[:, 1]  # z
+
+            # If root_y_pos is present (3D constraint), also constrain Y (height)
+            if constraint.root_y_pos is not None:
+                root_y_pos = constraint.root_y_pos
+                if isinstance(frame_indices, torch.Tensor):
+                    root_y_pos = root_y_pos[valid_mask]
+                else:
+                    root_y_pos = root_y_pos[valid_positions]
+                root_y_pos = _match_hip_dtype(root_y_pos)
+                hip_translations_input[frame_indices, 1] = root_y_pos
             continue
         elif isinstance(constraint, FullBodyConstraintSet) or isinstance(constraint, EndEffectorConstraintSet):
             global_rots = constraint.global_joints_rots  # (K, J, 3, 3) where K = len(frame_indices)
