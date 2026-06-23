@@ -2000,6 +2000,85 @@ class Kimodo_MotionPath:
 
 
 # ---------------------------------------------------------------------------
+# Node: Curve → Points (visual curve editor)
+# ---------------------------------------------------------------------------
+
+class Kimodo_CurveToPoints:
+    """Visual curve editor — place control points to define a 2D motion path.
+
+    The curve is drawn as a smooth monotone cubic Hermite spline.
+    Outputs a point string (one ``x, z`` per line) that connects directly
+    to ``Kimodo_MotionPath`` for waypoint generation.
+    """
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "num_samples": ("INT", {
+                    "default": 16, "min": 0, "max": 512, "step": 1,
+                    "tooltip": (
+                        "Number of evenly-sampled points along the curve. "
+                        "0 = output raw control points only."
+                    ),
+                }),
+            },
+            "hidden": {
+                "curve_json": ("STRING", {"default": "[]"}),
+                "node_id": "UNIQUE_ID",
+            },
+        }
+
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("points",)
+    FUNCTION = "sample"
+    CATEGORY = "Kimodo/Constraints"
+
+    def sample(self, num_samples, curve_json="[]", node_id=None):
+        import json
+        try:
+            ctrl = json.loads(curve_json)
+        except (json.JSONDecodeError, TypeError):
+            ctrl = []
+
+        if not isinstance(ctrl, list) or len(ctrl) < 2:
+            ctrl = [{"x": 0.0, "y": 0.0}, {"x": 1.0, "y": 1.0}]
+
+        pts = [[p["x"], p["y"]] for p in ctrl]
+
+        if num_samples == 0 or len(pts) == 2 and pts == [[0.0, 0.0], [1.0, 1.0]]:
+            lines = "\n".join(f"{x:.6f}, {z:.6f}" for x, z in pts)
+            return (lines,)
+
+        xs = [p[0] for p in pts]
+        zs = [p[1] for p in pts]
+
+        # Chord-length parameterisation
+        chords = [0.0]
+        for i in range(1, len(pts)):
+            dx = pts[i][0] - pts[i - 1][0]
+            dz = pts[i][1] - pts[i - 1][1]
+            chords.append(chords[-1] + math.hypot(dx, dz))
+        total = chords[-1]
+
+        if total < 1e-8:
+            lines = "\n".join(f"{pts[0][0]:.6f}, {pts[0][1]:.6f}" for _ in range(num_samples))
+            return (lines,)
+
+        t = [c / total for c in chords]
+        t_samples = [i / (num_samples - 1) for i in range(num_samples)]
+
+        from scipy.interpolate import PchipInterpolator
+        fx = PchipInterpolator(t, xs)
+        fz = PchipInterpolator(t, zs)
+
+        out_xs = fx(t_samples)
+        out_zs = fz(t_samples)
+
+        lines = "\n".join(f"{x:.6f}, {z:.6f}" for x, z in zip(out_xs, out_zs))
+        return (lines,)
+
+
+# ---------------------------------------------------------------------------
 # Node mappings
 # ---------------------------------------------------------------------------
 NODE_CLASS_MAPPINGS = {
@@ -2027,6 +2106,7 @@ NODE_CLASS_MAPPINGS = {
     "Kimodo_SelectBones": Kimodo_SelectBones,
     # Constraints
     "Kimodo_MotionPath": Kimodo_MotionPath,
+    "Kimodo_CurveToPoints": Kimodo_CurveToPoints,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -2045,4 +2125,5 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "Kimodo_Retarget": "Kimodo Retarget",
     "Kimodo_SelectBones": "Kimodo Select Bones",
     "Kimodo_MotionPath": "Kimodo Motion Path",
+    "Kimodo_CurveToPoints": "Kimodo Curve → Points",
 }
