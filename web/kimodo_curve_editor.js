@@ -483,14 +483,11 @@ canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
 window.addEventListener('keydown', (e) => {
   if ((e.key === 'Delete' || e.key === 'Backspace') && selectedIdx >= 0 && points.length > 2) {
-    const isEnd = selectedIdx === 0 || selectedIdx === points.length - 1;
-    if (!isEnd) {
-      points.splice(selectedIdx, 1);
-      selectedIdx = -1;
-      if (transformControls.object) transformControls.detach();
-      rebuildScene();
-      notifyParent();
-    }
+    points.splice(selectedIdx, 1);
+    selectedIdx = -1;
+    if (transformControls.object) transformControls.detach();
+    rebuildScene();
+    notifyParent();
   }
 });
 
