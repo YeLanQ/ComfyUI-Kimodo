@@ -254,6 +254,16 @@ class KimodoMotionData:
             s_np = _to_np(s)
             o_np = _to_np(o)
 
+            # Align last dimension if they differ (e.g. foot_contacts: 4 vs 6,
+            # global_root_heading: 1 vs 2).  Truncate to the smaller size so
+            # that np.concatenate along axis=1 does not raise.
+            if s_np.ndim >= 3 and o_np.ndim >= 3 and s_np.shape[-1] != o_np.shape[-1]:
+                min_last = min(s_np.shape[-1], o_np.shape[-1])
+                print(f"[Kimodo] Warning: aligning '{key}' last dim: "
+                      f"{s_np.shape[-1]} vs {o_np.shape[-1]} -> {min_last}", flush=True)
+                s_np = s_np[..., :min_last]
+                o_np = o_np[..., :min_last]
+
             if mode == "append":
                 new_od[key] = np.concatenate([s_np, o_np], axis=1)
 
@@ -1436,11 +1446,365 @@ class Kimodo_SelectBones:
 
 
 # ---------------------------------------------------------------------------
+# Node: Load Motion (BVH / NPZ)
+# ---------------------------------------------------------------------------
+class Kimodo_LoadMotion:
+    """Load BVH or NPZ motion files and convert to KimodoMotionData.
+
+    Supports:
+      - BVH files: parses skeleton hierarchy and motion channels.
+      - NPZ files: loads Kimodo-saved NPZ (posed_joints, rot_mats, etc.)
+        or raw motion arrays.
+
+    For BVH, the skeleton hierarchy is extracted from the file automatically.
+    For NPZ, an optional skeleton input provides joint names/parents;
+    otherwise they are auto-detected from joint count.
+    """
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "file_path": ("STRING", {
+                    "default": "",
+                    "tooltip": "Path to BVH or NPZ motion file. "
+                               "Supports: 'input/motion.bvh', absolute path, "
+                               "or relative to ComfyUI input/ folder.",
+                }),
+            },
+            "optional": {
+                "skeleton": ("KIMODO_SKELETON", {
+                    "tooltip": "Optional skeleton for joint metadata "
+                               "(required for NPZ without joint info).",
+                }),
+                "fps": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 240.0,
+                                  "step": 0.1,
+                                  "tooltip": "Override FPS. 0 = auto-detect "
+                                             "(BVH reads frame time, NPZ defaults to 30)."}),
+            },
+        }
+
+    RETURN_TYPES = ("KIMODO_MOTION", "KIMODO_SKELETON", "STRING")
+    RETURN_NAMES = ("motion", "skeleton_data", "summary")
+    FUNCTION = "load"
+    CATEGORY = "Kimodo"
+
+    @staticmethod
+    def _resolve_path(path_str: str) -> str | None:
+        """Resolve file path: absolute > ComfyUI/input/ > ComfyUI root.
+        
+        Mirrors the pattern used by TTS-Audio-Suite's _resolve_audio_file_path.
+        """
+        if not path_str or not path_str.strip():
+            return None
+        path = path_str.strip().replace("\\", "/")
+
+        # Absolute path
+        if os.path.isabs(path):
+            if os.path.exists(path):
+                return path
+
+        # Relative to ComfyUI input directory (primary — files uploaded via JS land here)
+        input_dir = folder_paths.get_input_directory()
+        candidates = [
+            os.path.normpath(os.path.join(input_dir, path)),
+        ]
+
+        # Also check subfolder/motion_name patterns
+        comfy_root = os.path.dirname(folder_paths.get_output_directory())
+        if path.startswith("input/") or path.startswith("output/"):
+            candidates.append(os.path.normpath(os.path.join(comfy_root, path)))
+        else:
+            candidates.append(os.path.normpath(os.path.join(comfy_root, "input", path)))
+            candidates.append(os.path.normpath(os.path.join(comfy_root, path)))
+
+        for c in candidates:
+            if os.path.exists(c):
+                return c
+        return None
+
+    def load(self, file_path, skeleton=None, fps=0.0):
+        resolved = self._resolve_path(file_path)
+        if resolved is None or not os.path.exists(resolved):
+            print(f"[Kimodo_LoadMotion] File not found: {file_path}", flush=True)
+            print("[Kimodo_LoadMotion] Supported locations: absolute path, "
+                  "ComfyUI/input/, or relative to ComfyUI root.", flush=True)
+            raise FileNotFoundError(f"Motion file not found: {file_path}")
+
+        ext = os.path.splitext(resolved)[1].lower()
+        print(f"[Kimodo_LoadMotion] Loading: {resolved}", flush=True)
+
+        if ext == ".bvh":
+            motion, skel_data, summary = self._load_bvh(resolved, fps)
+        elif ext == ".npz":
+            motion, skel_data, summary = self._load_npz(resolved, skeleton, fps)
+        else:
+            raise ValueError(f"Unsupported format: {ext}. Supported: .bvh, .npz")
+
+        print(f"[Kimodo_LoadMotion] {summary}", flush=True)
+        return (motion, skel_data, summary)
+
+    def _load_bvh(self, path: str, fps: float):
+        from kimodo.skeleton.bvh import SkeletonBvh, load_bvh_animation, Bvh
+        from kimodo.skeleton.kinematics import batch_rigid_transform
+
+        # --- Parse skeleton hierarchy from BVH ---
+        skel_bvh = SkeletonBvh()
+        exclude_bones = {"Root"}
+        skel_bvh.load_from_bvh(path, exclude_bones=exclude_bones)
+
+        joint_names = skel_bvh.get_bones_names()
+        joint_parents = skel_bvh.get_parent_indices()
+        neutral_joints_cm = skel_bvh.get_neutral_joints()  # [J, 3] in cm
+
+        # --- Load animation ---
+        root_trans, local_rot_mats = load_bvh_animation(path, skel_bvh)
+        # root_trans: [T, 3] in cm, local_rot_mats: [T, J, 3, 3]
+
+        T = local_rot_mats.shape[0]
+        n_joints = len(joint_names)
+
+        # Convert cm → m
+        root_trans_np = root_trans * 0.01
+        neutral_joints_np = neutral_joints_cm * 0.01
+
+        # --- Auto-detect FPS ---
+        if fps <= 0:
+            try:
+                with open(path) as f:
+                    mocap = Bvh(f.read())
+                fps = round(1.0 / mocap.frame_time)
+            except Exception:
+                fps = 30.0
+        print(f"[Kimodo_LoadMotion] BVH: {T} frames, {n_joints} joints, {fps} FPS", flush=True)
+
+        # --- Convert to torch ---
+        device = "cpu"
+        local_rot_mats_t = torch.from_numpy(
+            local_rot_mats if isinstance(local_rot_mats, np.ndarray)
+            else local_rot_mats.numpy()
+        ).float().to(device)
+        root_pos_t = torch.from_numpy(root_trans_np).float().to(device)
+
+        # --- Compute FK: global_rot_mats + posed_joints ---
+        root_idx = 0
+        neutral_t = torch.from_numpy(neutral_joints_np).float().to(device)
+        pelvis_offset = neutral_t[root_idx:root_idx + 1]
+        neutral_centered = neutral_t - pelvis_offset
+
+        joints_b = neutral_centered.unsqueeze(0).expand(T, -1, -1)  # [T, J, 3]
+        parents_t = torch.tensor(joint_parents, dtype=torch.long, device=device)
+
+        posed_joints_noroot, global_rot_mats = batch_rigid_transform(
+            local_rot_mats_t, joints_b, parents_t, root_idx
+        )
+        # posed_joints_noroot: [T, J, 3] with root at origin
+        # global_rot_mats: [T, J, 3, 3]
+
+        posed_joints = posed_joints_noroot + root_pos_t.unsqueeze(1)  # [T, J, 3]
+
+        # --- Build output_dict ---
+        output_dict = {
+            "posed_joints": posed_joints.cpu().numpy()[None],       # [1, T, J, 3]
+            "global_rot_mats": global_rot_mats.cpu().numpy()[None], # [1, T, J, 3, 3]
+            "local_rot_mats": local_rot_mats_t.cpu().numpy()[None], # [1, T, J, 3, 3]
+            "root_positions": root_pos_t.cpu().numpy()[None],       # [1, T, 3]
+            "smooth_root_pos": root_pos_t.cpu().numpy()[None],
+            "foot_contacts": np.zeros((1, T, 4), dtype=np.float32),
+            "global_root_heading": np.zeros((1, T, 1), dtype=np.float32),
+        }
+
+        motion_data = KimodoMotionData(
+            output_dict=output_dict,
+            model_name="bvh_loaded",
+            skeleton_name="bvh_custom",
+            fps=fps,
+            texts=["Loaded from BVH"],
+            num_frames=[T],
+            num_samples=1,
+            joint_parents=joint_parents,
+            joint_names=joint_names,
+            neutral_joints=neutral_joints_np,
+            skeleton=None,
+            constraint_lst=[],
+        )
+
+        skel_data = KimodoSkeletonData(
+            joint_names=joint_names,
+            joint_parents=joint_parents,
+            neutral_joints=neutral_joints_np,
+            skeleton_name="bvh_custom",
+            skeleton=None,
+        )
+
+        summary = f"Loaded BVH: {T} frames, {n_joints} joints, {fps} FPS"
+        return motion_data, skel_data, summary
+
+    def _load_npz(self, path: str, skeleton, fps: float):
+        data = np.load(path)
+
+        # Detect format by checking keys
+        if "posed_joints" in data:
+            # Kimodo NPZ format (from SaveNPZ node)
+            posed_joints = data["posed_joints"]   # [T, J, 3] or [1, T, J, 3]
+            has_batch = posed_joints.ndim == 4
+            if has_batch:
+                posed_joints = posed_joints[0]
+
+            T, n_joints = posed_joints.shape[:2]
+
+            output_dict = {}
+            for key in ["posed_joints", "global_rot_mats", "local_rot_mats",
+                         "root_positions", "smooth_root_pos",
+                         "foot_contacts", "global_root_heading"]:
+                if key in data:
+                    arr = data[key]
+                    if arr.ndim == 4 and arr.shape[0] == 1:
+                        arr = arr[0]
+                    output_dict[key] = arr[None]  # re-add batch dim
+                else:
+                    # Generate placeholder
+                    if key == "foot_contacts":
+                        output_dict[key] = np.zeros((1, T, 4), dtype=np.float32)
+                    elif key == "global_root_heading":
+                        output_dict[key] = np.zeros((1, T, 1), dtype=np.float32)
+                    elif key == "smooth_root_pos" and "root_positions" in output_dict:
+                        output_dict[key] = output_dict["root_positions"]
+                    else:
+                        output_dict[key] = np.zeros((1, T, n_joints, 3), dtype=np.float32) \
+                            if "mats" in key else np.zeros((1, T, 3), dtype=np.float32)
+
+            root_pos = output_dict.get("root_positions", np.zeros((1, T, 3)))
+        else:
+            # Unknown NPZ — try to find motion arrays by common names
+            n_joints = self._detect_joint_count(data)
+            T = self._detect_frame_count(data)
+
+            # Try to find rotation data
+            local_rot_mats = None
+            for key in ("local_rot_mats", "rots", "rotations", "joint_rots"):
+                if key in data:
+                    local_rot_mats = data[key]
+                    break
+
+            root_positions_arr = None
+            for key in ("root_positions", "root_trans", "trans", "root"):
+                if key in data:
+                    root_positions_arr = data[key]
+                    break
+
+            posed_joints_arr = None
+            for key in ("posed_joints", "joints", "positions", "joint_positions"):
+                if key in data:
+                    posed_joints_arr = data[key]
+                    break
+
+            output_dict = {
+                "posed_joints": (posed_joints_arr if posed_joints_arr is not None
+                                 else np.zeros((T, n_joints, 3)))[None],
+                "root_positions": (root_positions_arr if root_positions_arr is not None
+                                   else np.zeros((T, 3)))[None],
+                "foot_contacts": np.zeros((1, T, 4), dtype=np.float32),
+                "global_root_heading": np.zeros((1, T, 1), dtype=np.float32),
+            }
+
+            if local_rot_mats is not None:
+                output_dict["local_rot_mats"] = local_rot_mats[None]
+                output_dict["global_rot_mats"] = local_rot_mats[None]
+            else:
+                output_dict["local_rot_mats"] = np.zeros((1, T, n_joints, 3, 3), dtype=np.float32)
+                output_dict["global_rot_mats"] = np.zeros((1, T, n_joints, 3, 3), dtype=np.float32)
+
+            output_dict["smooth_root_pos"] = output_dict["root_positions"]
+
+        # --- Joint names / parents ---
+        if skeleton is not None:
+            joint_names = skeleton.joint_names
+            joint_parents = skeleton.joint_parents
+            neutral_joints = skeleton.neutral_joints
+            skel_name = skeleton.skeleton_name
+        else:
+            # Auto-detect by joint count
+            joint_names, joint_parents, neutral_joints, skel_name = \
+                self._auto_skeleton(n_joints)
+
+        # --- FPS ---
+        if fps <= 0:
+            fps = 30.0
+
+        motion_data = KimodoMotionData(
+            output_dict=output_dict,
+            model_name="npz_loaded",
+            skeleton_name=skel_name,
+            fps=fps,
+            texts=["Loaded from NPZ"],
+            num_frames=[T],
+            num_samples=1,
+            joint_parents=joint_parents,
+            joint_names=joint_names,
+            neutral_joints=neutral_joints,
+            skeleton=None,
+            constraint_lst=[],
+        )
+
+        skel_data = KimodoSkeletonData(
+            joint_names=joint_names,
+            joint_parents=joint_parents,
+            neutral_joints=neutral_joints,
+            skeleton_name=skel_name,
+            skeleton=None,
+        )
+
+        summary = f"Loaded NPZ: {T} frames, {n_joints} joints, {fps} FPS"
+        return motion_data, skel_data, summary
+
+    @staticmethod
+    def _detect_joint_count(data) -> int:
+        for key in ("posed_joints", "joints", "local_rot_mats", "global_rot_mats"):
+            if key in data:
+                arr = data[key]
+                if arr.ndim >= 3:
+                    return arr.shape[-3] if arr.ndim == 4 else arr.shape[-2]
+        return 30
+
+    @staticmethod
+    def _detect_frame_count(data) -> int:
+        for key in ("posed_joints", "joints", "local_rot_mats", "root_positions", "trans"):
+            if key in data:
+                arr = data[key]
+                if arr.ndim >= 2:
+                    idx = -2 if arr.ndim >= 3 else -1
+                    # Skip batch dim if present
+                    return arr.shape[0] if arr.ndim <= 2 else arr.shape[0]
+        return 1
+
+    @staticmethod
+    def _auto_skeleton(n_joints: int):
+        """Auto-detect skeleton by joint count, or create generic names."""
+        # Try to use kimodo's built-in skeleton definitions
+        try:
+            from kimodo.skeleton.registry import build_skeleton
+            skel = build_skeleton(n_joints)
+            jn = list(skel.bone_order_names)
+            jp = skel.joint_parents.cpu().tolist()
+            nj = skel.neutral_joints.cpu().numpy() if hasattr(skel, 'neutral_joints') else None
+            return jn, jp, nj, skel.name
+        except Exception:
+            pass
+
+        # Fallback: generic linear hierarchy
+        jn = [f"joint_{i}" for i in range(n_joints)]
+        jp = [-1] + [i - 1 for i in range(1, n_joints)]
+        return jn, jp, None, f"unknown_{n_joints}"
+
+
+# ---------------------------------------------------------------------------
 # Node mappings
 # ---------------------------------------------------------------------------
 NODE_CLASS_MAPPINGS = {
     # Loaders
     "Kimodo_LoadModel": Kimodo_LoadModel,
+    "Kimodo_LoadMotion": Kimodo_LoadMotion,
     # Configuration
     "Kimodo_Config": Kimodo_Config,
     # Conditioning
@@ -1464,6 +1828,7 @@ NODE_CLASS_MAPPINGS = {
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "Kimodo_LoadModel": "Kimodo Load Model",
+    "Kimodo_LoadMotion": "Kimodo Load Motion",
     "Kimodo_Config": "Kimodo Configuration",
     "Kimodo_TextEncode": "Kimodo Text Encode",
     "Kimodo_Sampler": "Kimodo Sampler",
