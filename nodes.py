@@ -209,7 +209,8 @@ class KimodoMotionData:
         )
 
     def combine_with(self, other: "KimodoMotionData", mode: str = "append",
-                     frame_offset: int = 0) -> "KimodoMotionData":
+                     frame_offset: int = 0,
+                     overwrite_length: int = 0) -> "KimodoMotionData":
         """Combine this motion with *other* along the time (frame) axis.
 
         Modes
@@ -218,8 +219,10 @@ class KimodoMotionData:
             Concatenate *other* after this motion's last frame.
         ``overwrite``
             Replace frames in this motion starting at *frame_offset* with
-            *other*'s frames.  If *other* overflows past the end of this
-            motion the result is padded with zeros.
+            *other*'s frames.  If *overwrite_length* > 0, only that many
+            frames from *other* are used; otherwise all of *other* is used.
+            If *other* overflows past the end of this motion the result is
+            padded with zeros.
 
         Both motions must share the same skeleton structure (same joint
         count).  A warning is printed when joint names differ.
@@ -271,6 +274,9 @@ class KimodoMotionData:
                 offset = frame_offset
                 s_frames = s_np.shape[1]
                 o_frames = o_np.shape[1]
+                if overwrite_length > 0:
+                    o_np = o_np[:, :min(overwrite_length, o_frames)]
+                    o_frames = o_np.shape[1]
                 total = max(s_frames, offset + o_frames)
 
                 if total > s_frames:
@@ -886,6 +892,8 @@ class Kimodo_Sampler:
                 }),
                 "overwrite_frame": ("INT", {"default": 0, "min": 0, "max": 100000,
                                             "tooltip": "Frame index where new motion overwrites existing (overwrite mode)"}),
+                "overwrite_length": ("INT", {"default": 0, "min": 0, "max": 100000,
+                                              "tooltip": "Number of frames to overwrite (0 = use all generated frames)"}),
             },
         }
 
@@ -896,7 +904,7 @@ class Kimodo_Sampler:
 
     def sample(self, model, conditioning, duration=5.0, seed=42, num_samples=1,
                diffusion_steps=100, constraints_json="", existing_motion=None,
-               composition_mode="new", overwrite_frame=0):
+               composition_mode="new", overwrite_frame=0, overwrite_length=0):
 
         seed_everything(seed)
         texts = conditioning.texts
@@ -936,7 +944,9 @@ class Kimodo_Sampler:
                 motion = existing_motion.combine_with(motion, mode="append")
                 print(f"[Kimodo] Appended new motion after existing ({existing_motion.output_dict['posed_joints'].shape[1]} frames → {motion.output_dict['posed_joints'].shape[1]} frames)", flush=True)
             elif composition_mode == "overwrite":
-                motion = existing_motion.combine_with(motion, mode="overwrite", frame_offset=overwrite_frame)
+                motion = existing_motion.combine_with(motion, mode="overwrite",
+                                                       frame_offset=overwrite_frame,
+                                                       overwrite_length=overwrite_length)
                 print(f"[Kimodo] Overwrote existing motion at frame {overwrite_frame}", flush=True)
 
         return (motion,)
