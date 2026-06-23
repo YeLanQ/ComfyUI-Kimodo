@@ -54,7 +54,14 @@ function computeChordLengthParams(points) {
   const chords = [0];
   for (let i = 1; i < points.length; i++) chords.push(chords[i - 1] + dist3D(points[i - 1], points[i]));
   const total = chords[chords.length - 1];
-  return { t: chords.map(c => total > 1e-8 ? c / total : c), total };
+  let t = chords.map(c => total > 1e-8 ? c / total : c);
+  // Ensure strictly increasing t — nudge duplicates by epsilon
+  for (let i = 1; i < t.length; i++) {
+    if (t[i] <= t[i - 1]) t[i] = t[i - 1] + 1e-10;
+  }
+  // Clamp last value to 1.0
+  if (t.length > 0) t[t.length - 1] = 1.0;
+  return { t, total };
 }
 function computeTangents3D(points, t) {
   const n = points.length, tangents = [];
@@ -84,7 +91,7 @@ function sampleCurve3D(points, tangents, t, resolution) {
   for (let i = 0; i < resolution; i++) {
     const u = i / (resolution - 1);
     let seg = 0;
-    while (seg < points.length - 2 && t[seg + 1] < u) seg++;
+    while (seg < points.length - 2 && t[seg + 1] <= u) seg++;
     const t0 = t[seg], t1 = t[seg + 1], segLen = t1 - t0, localT = segLen > 1e-8 ? (u - t0) / segLen : 0;
     const m0 = { x: tangents[seg].x * segLen, y: tangents[seg].y * segLen, z: tangents[seg].z * segLen };
     const m1 = { x: tangents[seg + 1].x * segLen, y: tangents[seg + 1].y * segLen, z: tangents[seg + 1].z * segLen };

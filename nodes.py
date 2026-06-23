@@ -2095,13 +2095,36 @@ class Kimodo_CurveToPoints:
             )
             return (lines,)
 
+        # Normalise to [0, 1]
         t = [c / total for c in chords]
+
+        # Deduplicate t so PchipInterpolator sees strictly increasing values
+        # (overlapping control points produce duplicate t values, which scipy rejects)
+        uniq_pts = []
+        uniq_t = []
+        for ti, pt in zip(t, pts):
+            if not uniq_t or ti > uniq_t[-1] + 1e-12:
+                uniq_t.append(ti)
+                uniq_pts.append(pt)
+        if len(uniq_t) < 2:
+            # All points collapsed — output repeated first point
+            lines = "\n".join(
+                f"{pts[0][0]:.6f}, {pts[0][1]:.6f}, {pts[0][2]:.6f}"
+                for _ in range(num_samples)
+            )
+            return (lines,)
+        uniq_t[-1] = 1.0  # guarantee the endpoint
+
+        xs = [p[0] for p in uniq_pts]
+        ys = [p[1] for p in uniq_pts]
+        zs = [p[2] for p in uniq_pts]
+
         t_samples = [i / (num_samples - 1) for i in range(num_samples)]
 
         from scipy.interpolate import PchipInterpolator
-        fx = PchipInterpolator(t, xs)
-        fy = PchipInterpolator(t, ys)
-        fz = PchipInterpolator(t, zs)
+        fx = PchipInterpolator(uniq_t, xs)
+        fy = PchipInterpolator(uniq_t, ys)
+        fz = PchipInterpolator(uniq_t, zs)
 
         out_xs = fx(t_samples)
         out_ys = fy(t_samples)
