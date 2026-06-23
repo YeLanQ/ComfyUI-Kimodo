@@ -208,6 +208,90 @@ class KimodoMotionData:
             constraint_lst=self.constraint_lst,
         )
 
+    def combine_with(self, other: "KimodoMotionData", mode: str = "append",
+                     frame_offset: int = 0) -> "KimodoMotionData":
+        """Combine this motion with *other* along the time (frame) axis.
+
+        Modes
+        -----
+        ``append``
+            Concatenate *other* after this motion's last frame.
+        ``overwrite``
+            Replace frames in this motion starting at *frame_offset* with
+            *other*'s frames.  If *other* overflows past the end of this
+            motion the result is padded with zeros.
+
+        Both motions must share the same skeleton structure (same joint
+        count).  A warning is printed when joint names differ.
+        """
+        if self.joint_names and other.joint_names and self.joint_names != other.joint_names:
+            print("[Kimodo] Warning: combining motions with different joint names", flush=True)
+
+        _FRAME_KEYS = [
+            "posed_joints", "global_rot_mats", "local_rot_mats",
+            "root_positions", "smooth_root_pos", "foot_contacts",
+            "global_root_heading",
+        ]
+
+        import numpy as np
+
+        def _to_np(v):
+            return v.cpu().numpy() if isinstance(v, torch.Tensor) else v
+
+        new_od = dict(self.output_dict)
+
+        for key in _FRAME_KEYS:
+            s = self.output_dict.get(key)
+            o = other.output_dict.get(key)
+            if s is None and o is None:
+                continue
+            if s is None:
+                new_od[key] = _to_np(o)
+                continue
+            if o is None:
+                continue
+
+            s_np = _to_np(s)
+            o_np = _to_np(o)
+
+            if mode == "append":
+                new_od[key] = np.concatenate([s_np, o_np], axis=1)
+
+            elif mode == "overwrite":
+                offset = frame_offset
+                s_frames = s_np.shape[1]
+                o_frames = o_np.shape[1]
+                total = max(s_frames, offset + o_frames)
+
+                if total > s_frames:
+                    pad_shape = list(s_np.shape)
+                    pad_shape[1] = total - s_frames
+                    buf = np.concatenate([s_np, np.zeros(pad_shape, dtype=s_np.dtype)], axis=1)
+                else:
+                    buf = s_np.copy()
+
+                end = min(offset + o_frames, total)
+                buf[:, offset:end] = o_np[:, :end - offset]
+                new_od[key] = buf
+
+        total_frames = new_od.get("posed_joints",
+                                   self.output_dict.get("posed_joints")).shape[1]
+
+        return KimodoMotionData(
+            output_dict=new_od,
+            model_name=self.model_name,
+            skeleton_name=self.skeleton_name,
+            fps=self.fps,
+            texts=self.texts,
+            num_frames=[total_frames],
+            num_samples=self.num_samples,
+            joint_parents=self.joint_parents,
+            joint_names=self.joint_names,
+            neutral_joints=None,
+            skeleton=self.skeleton,
+            constraint_lst=self.constraint_lst,
+        )
+
 
 class KimodoSkeletonData:
     """Wraps skeleton definition data for passing between nodes.
@@ -782,6 +866,16 @@ class Kimodo_Sampler:
             "optional": {
                 "constraints_json": ("STRING", {"default": "",
                                                 "tooltip": "Path to constraints JSON file (optional)"}),
+                "existing_motion": ("KIMODO_MOTION", {
+                    "tooltip": "Existing motion to extend/overwrite. If set, composition_mode must not be 'new'.",
+                }),
+                "composition_mode": (["new", "append", "overwrite"], {
+                    "default": "new",
+                    "tooltip": "'new' = fresh generation; 'append' = concatenate frames after existing; "
+                               "'overwrite' = replace frames in existing at overwrite_frame offset",
+                }),
+                "overwrite_frame": ("INT", {"default": 0, "min": 0, "max": 100000,
+                                            "tooltip": "Frame index where new motion overwrites existing (overwrite mode)"}),
             },
         }
 
@@ -791,7 +885,8 @@ class Kimodo_Sampler:
     CATEGORY = "Kimodo"
 
     def sample(self, model, conditioning, duration=5.0, seed=42, num_samples=1,
-               diffusion_steps=100, constraints_json=""):
+               diffusion_steps=100, constraints_json="", existing_motion=None,
+               composition_mode="new", overwrite_frame=0):
 
         seed_everything(seed)
         texts = conditioning.texts
@@ -799,7 +894,7 @@ class Kimodo_Sampler:
         multi_prompt = len(texts) > 1
 
         print(f"[Kimodo] Sampler: {len(texts)} segment(s), {num_frames[0]} frames, "
-              f"{num_samples} sample(s), {diffusion_steps} steps", flush=True)
+              f"{num_samples} sample(s), {diffusion_steps} steps, mode={composition_mode}", flush=True)
 
         constraint_lst = []
         if constraints_json and os.path.isfile(constraints_json):
@@ -818,7 +913,23 @@ class Kimodo_Sampler:
             return_numpy=True,
         )
 
-        return (self._wrap_output(model, output, texts, num_frames, num_samples, constraint_lst),)
+        motion = self._wrap_output(model, output, texts, num_frames, num_samples, constraint_lst)
+
+        # ------------------------------------------------------------------
+        # Composition: append or overwrite into existing_motion
+        # Inspired by Kimodo_Blender_Bridge's _apply_to_existing_source
+        # (overwrite the armature action) and the segment system that imports
+        # BVH at a specific start_frame offset (append).
+        # ------------------------------------------------------------------
+        if existing_motion is not None and composition_mode != "new":
+            if composition_mode == "append":
+                motion = existing_motion.combine_with(motion, mode="append")
+                print(f"[Kimodo] Appended new motion after existing ({existing_motion.output_dict['posed_joints'].shape[1]} frames → {motion.output_dict['posed_joints'].shape[1]} frames)", flush=True)
+            elif composition_mode == "overwrite":
+                motion = existing_motion.combine_with(motion, mode="overwrite", frame_offset=overwrite_frame)
+                print(f"[Kimodo] Overwrote existing motion at frame {overwrite_frame}", flush=True)
+
+        return (motion,)
 
     @staticmethod
     def _wrap_output(model, output, texts, num_frames, num_samples, constraint_lst):
