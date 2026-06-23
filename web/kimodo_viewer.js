@@ -57,6 +57,15 @@ const camera = new THREE.PerspectiveCamera(50, 1, 0.01, 100);
 camera.position.set(0, 1.5, 4);
 const controls = new OrbitControls(camera, canvas);
 controls.target.set(0, 0.9, 0);
+controls.mouseButtons = {
+    LEFT: THREE.MOUSE.ROTATE,
+    MIDDLE: THREE.MOUSE.PAN,
+    RIGHT: THREE.MOUSE.PAN
+};
+controls.touches = {
+    ONE: THREE.TOUCH.ROTATE_PAN,
+    TWO: THREE.TOUCH.DOLLY_PAN
+};
 controls.update();
 
 let jointMeshes = [];
