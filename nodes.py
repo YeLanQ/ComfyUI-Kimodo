@@ -1,6 +1,7 @@
 import os
 import sys
 import uuid
+import math
 from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Optional
@@ -1809,6 +1810,196 @@ class Kimodo_LoadMotion:
 
 
 # ---------------------------------------------------------------------------
+# Node: Motion Path (curve-controlled waypoints → constraints JSON)
+# ---------------------------------------------------------------------------
+
+class Kimodo_MotionPath:
+    """Generate root2d constraints from a path defined by control points.
+
+    Inspired by Kimodo_Blender_Bridge's curve sampling (operators.py
+    _sample_curve_arc_length + KIMODO_OT_SampleCurveAsWaypoints).
+
+    Takes 2D control points (x, z) in motion space, distributes evenly-spaced
+    waypoints along the arc-length of the control polygon, computes heading
+    (direction of travel) per waypoint, and writes the result as a Kimodo
+    constraints JSON file that can be passed to the Sampler node.
+    """
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "points": ("STRING", {
+                    "default": "0.0, 0.0\n3.0, 0.0\n5.0, 2.0\n5.0, 5.0",
+                    "multiline": True,
+                    "tooltip": (
+                        "Control points: one 'x, z' per line. "
+                        "Waypoints are evenly distributed along the path."
+                    ),
+                }),
+                "num_waypoints": ("INT", {
+                    "default": 8, "min": 2, "max": 30, "step": 1,
+                    "tooltip": "Number of evenly-spaced waypoints along the path.",
+                }),
+                "start_frame": ("INT", {
+                    "default": 0, "min": 0, "max": 100000,
+                    "tooltip": "First Kimodo frame index for the constraint.",
+                }),
+                "end_frame": ("INT", {
+                    "default": 90, "min": 1, "max": 100000,
+                    "tooltip": "Last Kimodo frame index for the constraint.",
+                }),
+            },
+            "optional": {
+                "auto_canonicalize": ("BOOLEAN", {
+                    "default": True,
+                    "tooltip": (
+                        "Offset all positions so the first waypoint "
+                        "is at (0,0). Keeps motion centered at origin."
+                    ),
+                }),
+                "compute_heading": ("BOOLEAN", {
+                    "default": True,
+                    "tooltip": (
+                        "Auto-compute heading from path direction. "
+                        "When off, uses fixed_heading."
+                    ),
+                }),
+                "fixed_heading": ("FLOAT", {
+                    "default": 0.0, "min": -180.0, "max": 180.0, "step": 1.0,
+                    "tooltip": (
+                        "Fixed heading angle in degrees (0 = +Z forward). "
+                        "Only used when compute_heading is off."
+                    ),
+                }),
+            },
+        }
+
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("constraints_json",)
+    FUNCTION = "build"
+    CATEGORY = "Kimodo/Constraints"
+
+    def build(self, points, num_waypoints=8, start_frame=0, end_frame=90,
+              auto_canonicalize=True, compute_heading=True, fixed_heading=0.0):
+        # 1. Parse control points
+        ctrl = self._parse_points(points)
+        if len(ctrl) < 2:
+            raise ValueError("Need at least 2 control points")
+
+        # 2. Arc-length parameterization of the control polygon
+        arc = [0.0]
+        for i in range(1, len(ctrl)):
+            dx = ctrl[i][0] - ctrl[i - 1][0]
+            dz = ctrl[i][1] - ctrl[i - 1][1]
+            arc.append(arc[-1] + math.hypot(dx, dz))
+        total = arc[-1]
+
+        # 3. Evenly-spaced waypoints along the arc
+        if total < 1e-8:
+            wps = [ctrl[0]] * num_waypoints
+        else:
+            wps = []
+            for i in range(num_waypoints):
+                target = i / (num_waypoints - 1) * total if num_waypoints > 1 else 0.0
+                seg = 0
+                while seg < len(arc) - 2 and arc[seg + 1] < target:
+                    seg += 1
+                seg_len = arc[seg + 1] - arc[seg]
+                frac = (target - arc[seg]) / seg_len if seg_len > 0 else 0.0
+                x = ctrl[seg][0] + frac * (ctrl[seg + 1][0] - ctrl[seg][0])
+                z = ctrl[seg][1] + frac * (ctrl[seg + 1][1] - ctrl[seg][1])
+                wps.append([x, z])
+
+        # 4. Headings (direction of travel)
+        last_angle = math.radians(fixed_heading)
+        headings = []
+        for i in range(num_waypoints):
+            if compute_heading:
+                if i + 1 < num_waypoints:
+                    dx = wps[i + 1][0] - wps[i][0]
+                    dz = wps[i + 1][1] - wps[i][1]
+                elif i > 0:
+                    dx = wps[i][0] - wps[i - 1][0]
+                    dz = wps[i][1] - wps[i - 1][1]
+                else:
+                    dx, dz = 0.0, 0.0
+                if abs(dx) > 1e-8 or abs(dz) > 1e-8:
+                    last_angle = math.atan2(dx, dz)
+                headings.append(last_angle)
+            else:
+                headings.append(math.radians(fixed_heading))
+
+        # 5. Canonicalize (subtract first waypoint XZ)
+        ox = wps[0][0] if auto_canonicalize else 0.0
+        oz = wps[0][1] if auto_canonicalize else 0.0
+
+        # 6. Frame mapping: evenly distributed across [start_frame, end_frame]
+        total_frames = end_frame - start_frame
+        frame_indices = []
+        smooth_root_2d = []
+        global_root_heading = []
+        for i in range(num_waypoints):
+            frac = i / (num_waypoints - 1) if num_waypoints > 1 else 0.0
+            kf = start_frame + round(frac * total_frames)
+            frame_indices.append(kf)
+            smooth_root_2d.append([wps[i][0] - ox, wps[i][1] - oz])
+            global_root_heading.append([math.cos(headings[i]), math.sin(headings[i])])
+
+        # 7. Build constraint dict
+        constraints = [{
+            "type": "root2d",
+            "frame_indices": frame_indices,
+            "smooth_root_2d": smooth_root_2d,
+            "global_root_heading": global_root_heading,
+        }]
+
+        # 8. Write to temp JSON file so the Sampler can load it via
+        #    load_constraints_lst(filepath, skeleton)
+        import json, tempfile
+        fd, json_path = tempfile.mkstemp(suffix=".json", prefix="kimodo_path_")
+        os.close(fd)
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(constraints, f, indent=2)
+
+        print(f"[Kimodo_MotionPath] {num_waypoints} waypoints, "
+              f"frames {start_frame}–{end_frame} → {json_path}", flush=True)
+        return (json_path,)
+
+    @staticmethod
+    def _parse_points(text: str) -> list[list[float]]:
+        """Parse control points from text input.
+
+        Accepts one 'x, z' per line, or comma-separated x1,z1,x2,z2,...
+        """
+        text = text.strip()
+        if not text:
+            return []
+
+        points = []
+        for line in text.split("\n"):
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = [p.strip() for p in line.replace(",", " ").split() if p.strip()]
+            if len(parts) >= 2:
+                try:
+                    points.append([float(parts[0]), float(parts[1])])
+                except ValueError:
+                    continue
+
+        # Fallback: comma-separated flat list
+        if not points and "," in text:
+            flat = [p.strip() for p in text.replace("\n", ",").split(",") if p.strip()]
+            if len(flat) >= 4 and len(flat) % 2 == 0:
+                for i in range(0, len(flat), 2):
+                    try:
+                        points.append([float(flat[i]), float(flat[i + 1])])
+                    except ValueError:
+                        break
+        return points
+
+
+# ---------------------------------------------------------------------------
 # Node mappings
 # ---------------------------------------------------------------------------
 NODE_CLASS_MAPPINGS = {
@@ -1834,6 +2025,8 @@ NODE_CLASS_MAPPINGS = {
     "Kimodo_SkeletonInfo": Kimodo_SkeletonInfo,
     "Kimodo_Retarget": Kimodo_Retarget,
     "Kimodo_SelectBones": Kimodo_SelectBones,
+    # Constraints
+    "Kimodo_MotionPath": Kimodo_MotionPath,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -1851,4 +2044,5 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "Kimodo_SkeletonInfo": "Kimodo Skeleton Info",
     "Kimodo_Retarget": "Kimodo Retarget",
     "Kimodo_SelectBones": "Kimodo Select Bones",
+    "Kimodo_MotionPath": "Kimodo Motion Path",
 }
