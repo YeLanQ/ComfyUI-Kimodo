@@ -32,7 +32,7 @@ const VIEWER_HTML = `<!DOCTYPE html>
   <span id="frameLabel" style="color:#aaa;font-size:11px;min-width:60px">0/0</span>
 </div>
 <script type="importmap">
-{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.171.0/build/three.module.js", "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.171.0/examples/jsm/" } }
+{ "imports": { "three": "__THREE_BASE_URL__/three/three.module.js", "three/addons/": "__THREE_BASE_URL__/three/" } }
 </script>
 <script type="module">
 import * as THREE from 'three';
@@ -221,6 +221,8 @@ app.registerExtension({
   async beforeRegisterNodeDef(nodeType, nodeData, app) {
     if (nodeData.name !== "Kimodo_Preview3D") return;
 
+    const threeBaseUrl = new URL('.', import.meta.url).href.replace(/\/+$/, '');
+
     const onNodeCreated = nodeType.prototype.onNodeCreated;
     nodeType.prototype.onNodeCreated = function () {
       const r = onNodeCreated ? onNodeCreated.apply(this, arguments) : undefined;
@@ -232,7 +234,8 @@ app.registerExtension({
       iframe.style.backgroundColor = "#1a1a2e";
       iframe.style.display = "block";
 
-      const blob = new Blob([VIEWER_HTML], { type: "text/html" });
+      const html = VIEWER_HTML.replace(/__THREE_BASE_URL__/g, threeBaseUrl);
+      const blob = new Blob([html], { type: "text/html" });
       const blobUrl = URL.createObjectURL(blob);
       iframe.src = blobUrl;
       iframe.addEventListener("load", () => { iframe._blobUrl = blobUrl; });

@@ -36,8 +36,8 @@ const EDITOR_HTML = `<!DOCTYPE html>
 <div id="hint">Left-click: select/add · Drag gizmo: move · Del: delete · Right-drag: orbit · Scroll: zoom</div>
 <script type="importmap">
 {"imports":{
-  "three":"https://cdn.jsdelivr.net/npm/three@0.171.0/build/three.module.js",
-  "three/addons/":"https://cdn.jsdelivr.net/npm/three@0.171.0/examples/jsm/"
+  "three":"__THREE_BASE_URL__/three/three.module.js",
+  "three/addons/":"__THREE_BASE_URL__/three/"
 }}
 </script>
 <script type="module">
@@ -458,6 +458,9 @@ if (initialData) {
 
 // ---- ComfyUI Extension ----
 
+// Compute local three.js base URL from this module's URL
+const __threeBaseUrl = new URL('.', import.meta.url).href.replace(/\/+$/, '');
+
 app.registerExtension({
   name: "kimodo.CurveToPoints",
   async beforeRegisterNodeDef(nodeType, nodeData, app) {
@@ -480,7 +483,8 @@ app.registerExtension({
       iframe.style.backgroundColor = "#2a2a3a";
       iframe.style.display = "block";
 
-      const blob = new Blob([EDITOR_HTML], { type: "text/html" });
+      const html = EDITOR_HTML.replace(/__THREE_BASE_URL__/g, __threeBaseUrl);
+      const blob = new Blob([html], { type: "text/html" });
       const blobUrl = URL.createObjectURL(blob);
       iframe.src = blobUrl;
       iframe.addEventListener("load", () => { iframe._blobUrl = blobUrl; });
