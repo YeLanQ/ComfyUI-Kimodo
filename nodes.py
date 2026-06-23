@@ -874,7 +874,7 @@ class Kimodo_Sampler:
             "required": {
                 "model": ("KIMODO_MODEL",),
                 "conditioning": ("KIMODO_COND",),
-                "duration": ("FLOAT", {"default": 5.0, "min": 0.5, "max": 30.0, "step": 0.5,
+                "duration": ("FLOAT", {"default": 5.0, "min": 5.0, "max": 30.0, "step": 0.5,
                                        "tooltip": "Duration in seconds per segment"}),
                 "seed": ("INT", {"default": 42, "min": 0, "max": 2**32 - 1}),
                 "num_samples": ("INT", {"default": 1, "min": 1, "max": 16}),
