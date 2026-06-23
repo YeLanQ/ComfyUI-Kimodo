@@ -11,32 +11,74 @@
 - **运动学约束** — 可选的 JSON 约束：姿态关键帧、末端执行器位置、2D 路径
 - **多段提示** — 用句号分隔多个动作描述，自动平滑过渡
 - **多样本生成** — 从同一提示生成多个动作变体
+- **动作合成** — 追加或覆盖动作以构建更长的序列
 - **NPZ 导出** — 保存动作数据（关节位置、旋转、足部接触、轨迹）
 - **BVH 导出** — 导出 BVH 格式用于动画软件（仅限 SOMA 骨骼）
+- **BVH/NPZ 导入** — 加载现有动作文件进行编辑或重定向
 - **FBX 导出 (Mixamo)** — 将动作重定向到 Mixamo 绑定的 FBX 角色并导出动画 FBX
+- **骨骼操作** — 检查层级结构、骨骼重定向、选择骨骼子集
+- **交互式曲线编辑器** — 基于 Web 的 3D 路径编辑器，用于运动轨迹控制
 - **2D 预览** — 骨架简笔画可视化，作为 ComfyUI IMAGE 输出
+- **3D 预览** — 浏览器中的 Three.js 交互式骨架查看器
 - **HuggingFace 自动下载** — 首次使用时自动下载模型（约需 17GB 显存）
 
 ## 节点说明
 
-### 模块化工作流（推荐）
+### 加载器
 
 | 节点 | 分类 | 说明 |
 |------|------|------|
 | **Kimodo Load Model** | 加载器 | 加载 Kimodo 模型变体（自动从 HuggingFace 下载） |
-| **Kimodo Text Encode** | 条件 | 编码文本提示 → 可复用的条件（换 seed 不用重新编码） |
-| **Kimodo Sampler** | 采样 | 扩散采样 + 可选约束 → 动作数据 |
-| **Kimodo Post Process** | 后处理 | 脚滑修正（可选，需要 motion_correction 模块） |
+| **Kimodo Load Motion** | 加载器 | 加载 BVH 或 NPZ 动作文件进行编辑、重定向或导出 |
+
+### 配置
+
+| 节点 | 说明 |
+|------|------|
+| **Kimodo Configuration** | 设置文本编码器模式（本地 / API / 自动）、基础模型和适配器路径 |
+
+### 条件
+
+| 节点 | 说明 |
+|------|------|
+| **Kimodo Text Encode** | 编码文本提示 → 可复用的条件（换 seed 不用重新编码） |
+
+### 采样
+
+| 节点 | 说明 |
+|------|------|
+| **Kimodo Sampler** | 扩散采样 + 可选约束 → 动作数据。支持合成模式（追加/覆盖） |
+
+### 后处理
+
+| 节点 | 说明 |
+|------|------|
+| **Kimodo Post Process** | 脚滑修正，可配置根关节边距（可选，需要 motion_correction 模块） |
 
 ### 预览 & 导出
 
 | 节点 | 说明 |
 |------|------|
 | **Kimodo Preview (2D)** | 渲染指定帧的 2D 骨架简笔画 |
-| **Kimodo Preview 3D** | 交互式 3D 骨架可视化 |
+| **Kimodo Preview 3D** | 浏览器中的交互式 3D 骨架可视化 |
 | **Kimodo Save NPZ** | 保存动作数据为 NPZ 文件 |
 | **Kimodo Export BVH** | 导出 BVH 格式（仅限 SOMA 骨骼） |
 | **Kimodo Export FBX (Mixamo)** | 将动作重定向并导出到 Mixamo 绑定的 FBX 角色 |
+
+### 骨骼操作
+
+| 节点 | 说明 |
+|------|------|
+| **Kimodo Skeleton Info** | 检查关节名称、父级层级结构和 T-Pose 位置 |
+| **Kimodo Retarget** | 通过显式骨骼映射或自动名称匹配重新映射/排序关节 |
+| **Kimodo Select Bones** | 仅保留指定的骨骼 |
+
+### 约束
+
+| 节点 | 说明 |
+|------|------|
+| **Kimodo Motion Path** | 从 3D 控制点生成 root2d 约束，均匀分布路径点 |
+| **Kimodo Curve → Points** | 交互式 3D 曲线编辑器（Web UI），输出控制点给 Motion Path |
 
 ## 安装
 
@@ -44,7 +86,7 @@
 
 ```bash
 cd ComfyUI/custom_nodes
-git clone https://github.com/nv-tlabs/ComfyUI-Kimodo.git
+git clone https://github.com/jtydhr88/ComfyUI-Kimodo.git
 ```
 
 安装依赖：
@@ -117,7 +159,7 @@ pip install -e .
 
 验证：`python -c "import motion_correction; print('OK')"`
 
-> 不安装此模块时，将 Generate 节点的 `post_processing` 设为 `False` 即可。动作仍可正常生成，但可能有脚滑现象。
+> 不安装此模块时，将 Sampler 节点的 `post_processing` 设为 `False` 即可。动作仍可正常生成，但可能有脚滑现象。
 
 ### FBX 导出（可选）
 
@@ -150,18 +192,33 @@ Load Model → Text Encode → Sampler → Post Process → Export/Preview
 4. 添加 **Kimodo Post Process** — 可选的脚滑修正
 5. 添加预览/导出节点
 
-
 ### 参数说明
+
+#### Sampler
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
-| `prompt` | — | 动作的文本描述 |
-| `duration` | 5.0 | 时长（秒） |
+| `prompt` | — | 动作的文本描述（通过 Text Encode 节点） |
+| `duration` | 5.0 | 每段时长（秒） |
 | `seed` | 42 | 随机种子 |
 | `num_samples` | 1 | 生成的动作变体数量 |
 | `diffusion_steps` | 100 | 去噪步数（越多质量越好，速度越慢） |
-| `post_processing` | true | 足部滑动修正（推荐开启，G1 机器人会忽略） |
 | `constraints_json` | — | 可选的运动学约束 JSON 文件路径 |
+| `composition_mode` | new | `new` = 全新生成；`append` = 追加到现有动作后；`overwrite` = 覆盖帧 |
+| `overwrite_frame` | 0 | 覆盖模式下的起始帧索引 |
+
+#### FBX 导出
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `yaw_offset` | 0.0 | 绕 Y 轴旋转角色（度） |
+| `scale` | 0.0 | 强制缩放倍数（0 = 自动基于高度缩放） |
+
+#### 后处理
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `root_margin` | 0.04 | 根关节修正边距（米） |
 
 ### 多段提示
 
@@ -173,6 +230,25 @@ A person walks forward. They stop and wave hello. They turn around and sit down.
 
 每段使用指定的时长。
 
+### 动作合成
+
+将现有动作连接到 Sampler 的 `existing_motion` 输入，设置 `composition_mode` 为 `append` 或 `overwrite`：
+
+- **Append**：新动作帧追加到现有动作末尾
+- **Overwrite**：在 `overwrite_frame` 处开始覆盖现有动作的帧
+
+### 骨骼操作
+
+1. **Kimodo Skeleton Info** — 连接动作数据，检查关节层级、名称和 T-Pose
+2. **Kimodo Retarget** — 通过文本映射重排骨骼（如 `left_hand -> hand_l`），自动匹配或保持原样
+3. **Kimodo Select Bones** — 仅保留指定的骨骼（逗号或换行分隔）
+
+### 约束：运动路径
+
+1. 添加 **Kimodo Curve → Points** 进行交互式 3D 路径编辑
+2. 将其输出连接到 **Kimodo Motion Path** 生成均匀分布的路径点
+3. 将 Motion Path 的 `constraints_json` 输出连接到 Sampler
+
 ### 输出格式
 
 NPZ 输出包含：
@@ -182,10 +258,25 @@ NPZ 输出包含：
 - `foot_contacts` — 足部接触标签 `[T, 4]`
 - `global_root_heading` — 根朝向角度 `[T]`
 
+## 工作流
+
+`workflows/` 目录中包含示例工作流 JSON 文件：
+
+- `kimodo-basic.json` — 基础文本生成动作
+- `kimodo-fbx.json` — 生成并导出 FBX
+- `kimodo-with-post-process.json` — 生成并脚滑修正
+
 ## 致谢
 
 本插件封装了 [NVIDIA Toronto AI Lab](https://github.com/nv-tlabs) 的 [Kimodo](https://github.com/nv-tlabs/kimodo) 项目。
 
+## 联系
+
+- **GitHub Issues** — 报告问题、功能请求和讨论：https://github.com/jtydhr88/ComfyUI-Kimodo/issues
+- **Kimodo 原项目** — NVIDIA 运动扩散模型：https://github.com/nv-tlabs/kimodo
+- **NVIDIA Toronto AI Lab** — Kimodo 背后的研究团队：https://www.torontoai-lab.com
+- **HuggingFace 模型** — 预训练的 Kimodo 模型：https://huggingface.co/nvidia
+
 ## 许可证
 
-Apache-2.0
+[Apache-2.0](https://www.apache.org/licenses/LICENSE-2.0)

@@ -11,32 +11,74 @@ A ComfyUI plugin that wraps [Kimodo](https://github.com/nv-tlabs/kimodo) — NVI
 - **Kinematic Constraints** — Optional JSON constraints for pose keyframes, end-effector positions, 2D paths
 - **Multi-Prompt Segments** — Chain multiple motion descriptions with smooth transitions
 - **Multiple Samples** — Generate batch of motion variations from the same prompt
+- **Motion Composition** — Append or overwrite motions to build longer sequences
 - **NPZ Export** — Save motion data (joint positions, rotations, foot contacts, trajectories)
 - **BVH Export** — Export to BVH format for animation software (SOMA skeletons)
+- **BVH/NPZ Import** — Load existing motion files for editing or retargeting
 - **FBX Export (Mixamo)** — Retarget motion onto Mixamo-rigged FBX characters and export animated FBX
+- **Skeleton Operations** — Inspect hierarchy, retarget between skeletons, select bone subsets
+- **Interactive Curve Editor** — 3D web-based path editor for motion trajectory control
 - **2D Preview** — Skeleton stick-figure visualization as ComfyUI IMAGE output
+- **3D Preview** — Three.js interactive skeleton viewer in browser
 - **HuggingFace Auto-Download** — Models download automatically on first use (~17GB VRAM)
 
 ## Nodes
 
-### Modular Workflow (Recommended)
+### Loaders
 
 | Node | Category | Description |
 |------|----------|-------------|
 | **Kimodo Load Model** | Loaders | Load a Kimodo model variant (auto-downloads from HuggingFace) |
-| **Kimodo Text Encode** | Conditioning | Encode text prompt → reusable conditioning (swap seeds without re-encoding) |
-| **Kimodo Sampler** | Sampling | Diffusion sampling with conditioning + optional constraints → motion |
-| **Kimodo Post Process** | Post-processing | Foot-skate cleanup (optional, requires motion_correction module) |
+| **Kimodo Load Motion** | Loaders | Load BVH or NPZ motion files for editing, retargeting, or export |
+
+### Configuration
+
+| Node | Description |
+|------|-------------|
+| **Kimodo Configuration** | Set text encoder mode (local / API / auto), base model, and adapter paths |
+
+### Conditioning
+
+| Node | Description |
+|------|-------------|
+| **Kimodo Text Encode** | Encode text prompt → reusable conditioning (swap seeds without re-encoding) |
+
+### Sampling
+
+| Node | Description |
+|------|-------------|
+| **Kimodo Sampler** | Diffusion sampling with conditioning + optional constraints → motion. Supports composition (append/overwrite) with existing motions |
+
+### Post-Processing
+
+| Node | Description |
+|------|-------------|
+| **Kimodo Post Process** | Foot-skate cleanup with configurable root margin (optional, requires motion_correction module) |
 
 ### Preview & Export
 
 | Node | Description |
 |------|-------------|
 | **Kimodo Preview (2D)** | Render 2D skeleton stick-figure for a specific frame |
-| **Kimodo Preview 3D** | Interactive 3D skeleton visualization |
+| **Kimodo Preview 3D** | Interactive 3D skeleton visualization in browser |
 | **Kimodo Save NPZ** | Save motion data as NPZ files |
 | **Kimodo Export BVH** | Export motion to BVH format (SOMA skeletons only) |
 | **Kimodo Export FBX (Mixamo)** | Retarget and export motion to a Mixamo-rigged FBX character |
+
+### Skeleton Operations
+
+| Node | Description |
+|------|-------------|
+| **Kimodo Skeleton Info** | Inspect joint names, parent hierarchy, and rest-pose positions |
+| **Kimodo Retarget** | Remap/reorder joints via explicit bone mapping or auto name matching |
+| **Kimodo Select Bones** | Keep only specified bones from motion data |
+
+### Constraints
+
+| Node | Description |
+|------|-------------|
+| **Kimodo Motion Path** | Generate root2d constraints from 3D control points with even waypoint distribution |
+| **Kimodo Curve → Points** | Interactive 3D curve editor (web UI) that outputs control points for Motion Path |
 
 ## Installation
 
@@ -129,6 +171,11 @@ pip install fbxsdkpy --extra-index-url https://gitlab.inria.fr/api/v4/projects/1
 
 You also need a Mixamo-rigged FBX character file. Download one from [Mixamo](https://www.mixamo.com/) (select "Without Skin" or "T-Pose" for best results).
 
+### Hardware Requirements
+
+- CUDA GPU, ~17GB VRAM (text encoder + diffusion model)
+- Tested on: RTX 3090, RTX 4090, A100
+
 ## Usage
 
 ### Modular Workflow (Recommended)
@@ -143,20 +190,35 @@ Load Model → Text Encode → Sampler → Post Process → Export/Preview
 2. Add **Kimodo Text Encode** — enter text prompt (reusable across different seeds)
 3. Add **Kimodo Sampler** — set duration, seed, diffusion steps
 4. Add **Kimodo Post Process** — optional foot-skate cleanup
-5. Add **Kimodo Preview** / **Kimodo Export BVH** / **Kimodo Export FBX** — visualize or save
-
+5. Add preview/export nodes
 
 ### Parameters
 
+#### Sampler
+
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `prompt` | — | Text description of the motion |
-| `duration` | 5.0 | Duration in seconds |
+| `prompt` | — | Text description of the motion (via Text Encode node) |
+| `duration` | 5.0 | Duration in seconds per segment |
 | `seed` | 42 | Random seed for reproducibility |
 | `num_samples` | 1 | Number of motion variations to generate |
 | `diffusion_steps` | 100 | Denoising steps (more = better quality, slower) |
-| `post_processing` | true | Foot-skate cleanup (recommended, ignored for G1) |
 | `constraints_json` | — | Optional path to kinematic constraints JSON |
+| `composition_mode` | new | `new` = fresh generation; `append` = concatenate after existing; `overwrite` = replace frames |
+| `overwrite_frame` | 0 | Frame index for overwrite mode |
+
+#### FBX Export
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `yaw_offset` | 0.0 | Rotate character around Y-axis (degrees) |
+| `scale` | 0.0 | Force scale multiplier (0 = auto height-based scaling) |
+
+#### Post Process
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `root_margin` | 0.04 | Root correction margin in meters |
 
 ### Multi-Prompt
 
@@ -168,6 +230,25 @@ A person walks forward. They stop and wave hello. They turn around and sit down.
 
 Each segment gets the specified duration.
 
+### Motion Composition
+
+Connect an existing motion to the Sampler's `existing_motion` input and set `composition_mode` to `append` or `overwrite`:
+
+- **Append**: new motion frames are concatenated after the last frame of existing motion
+- **Overwrite**: new motion replaces frames in existing motion starting at `overwrite_frame`
+
+### Skeleton Operations
+
+1. **Kimodo Skeleton Info** — connect a motion to inspect joint hierarchy, names, and rest pose
+2. **Kimodo Retarget** — reorder/remap bones via text mapping (e.g. `left_hand -> hand_l`), auto name matching, or identity pass-through
+3. **Kimodo Select Bones** — keep only specified bones (comma/newline separated names)
+
+### Constraints: Motion Path
+
+1. Add **Kimodo Curve → Points** for interactive 3D path editing
+2. Connect its output to **Kimodo Motion Path** to generate evenly-spaced waypoints
+3. Connect Motion Path's `constraints_json` to the Sampler
+
 ### Output Format
 
 The NPZ output contains:
@@ -177,10 +258,25 @@ The NPZ output contains:
 - `foot_contacts` — Foot contact labels `[T, 4]`
 - `global_root_heading` — Root heading angle `[T]`
 
+## Workflows
+
+Example workflow JSON files are in the `workflows/` directory:
+
+- `kimodo-basic.json` — Basic text-to-motion generation
+- `kimodo-fbx.json` — Generation with FBX export
+- `kimodo-with-post-process.json` — Generation with foot-skate correction
+
 ## Credits
 
-This plugin wraps [Kimodo](https://github.com/nv-tlabs/kimodo)g.
+This plugin wraps [Kimodo](https://github.com/nv-tlabs/kimodo) from NVIDIA Toronto AI Lab.
+
+## Connect
+
+- **GitHub Issues** — Bug reports, feature requests, and discussions: https://github.com/jtydhr88/ComfyUI-Kimodo/issues
+- **Original Kimodo** — NVIDIA's motion diffusion model: https://github.com/nv-tlabs/kimodo
+- **NVIDIA Toronto AI Lab** — Research lab behind Kimodo: https://www.torontoai-lab.com
+- **HuggingFace Models** — Pre-trained Kimodo models: https://huggingface.co/nvidia
 
 ## License
 
-Apache-2.0
+[Apache-2.0](https://www.apache.org/licenses/LICENSE-2.0)
