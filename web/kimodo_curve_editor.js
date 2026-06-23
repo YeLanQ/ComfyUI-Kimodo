@@ -279,12 +279,13 @@ app.registerExtension({
           graphCanvas.showNodeContextMenu = origShow;
         });
 
-        // Backup: prevent native browser context menu over the editor
+        // Prevent native browser context menu after right-click in editor
         const canvasEl = graphCanvas.canvas;
         const handler = (e) => {
-          const mx = e.offsetX - this.pos[0];
-          const my = e.offsetY - this.pos[1];
-          if (this.editor?._isInBounds(mx, my)) e.preventDefault();
+          if (this._pendingCtx && this.editor?._isInBounds(...this._pendingCtx)) {
+            e.preventDefault();
+          }
+          this._pendingCtx = null;
         };
         canvasEl.addEventListener("contextmenu", handler);
         this.onRemoved.push(() => canvasEl.removeEventListener("contextmenu", handler));
@@ -300,6 +301,7 @@ app.registerExtension({
         if (e.button === 2 && this.editor?._isInBounds(pos[0], pos[1])) {
           e.preventDefault();
           this._skipCtx = true;
+          this._pendingCtx = [pos[0], pos[1]];
           if (this.editor.onMouseDown(e, pos)) {
             this.setDirtyCanvas(true, true);
             return true;
