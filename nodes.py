@@ -1814,12 +1814,9 @@ class Kimodo_LoadMotion:
 # ---------------------------------------------------------------------------
 
 class Kimodo_MotionPath:
-    """Generate root2d constraints from a path defined by control points.
+    """Generate root2d constraints from a 3D path defined by control points.
 
-    Inspired by Kimodo_Blender_Bridge's curve sampling (operators.py
-    _sample_curve_arc_length + KIMODO_OT_SampleCurveAsWaypoints).
-
-    Takes 2D control points (x, z) in motion space, distributes evenly-spaced
+    Takes 3D control points (x, y, z) in motion space, distributes evenly-spaced
     waypoints along the arc-length of the control polygon, computes heading
     (direction of travel) per waypoint, and writes the result as a Kimodo
     constraints JSON file that can be passed to the Sampler node.
@@ -1829,10 +1826,10 @@ class Kimodo_MotionPath:
         return {
             "required": {
                 "points": ("STRING", {
-                    "default": "0.0, 0.0\n3.0, 0.0\n5.0, 2.0\n5.0, 5.0",
+                    "default": "0.0, 0.0, 0.0\n2.0, 1.0, 2.0\n4.0, 0.0, 4.0",
                     "multiline": True,
                     "tooltip": (
-                        "Control points: one 'x, z' per line. "
+                        "Control points: one 'x, y, z' per line. "
                         "Waypoints are evenly distributed along the path."
                     ),
                 }),
@@ -1881,20 +1878,24 @@ class Kimodo_MotionPath:
 
     def build(self, points, num_waypoints=8, start_frame=0, end_frame=90,
               auto_canonicalize=True, compute_heading=True, fixed_heading=0.0):
-        # 1. Parse control points
+        # 1. Parse control points (support 2D and 3D)
         ctrl = self._parse_points(points)
         if len(ctrl) < 2:
             raise ValueError("Need at least 2 control points")
 
-        # 2. Arc-length parameterization of the control polygon
+        # Normalize to 3D: ensure each point has exactly 3 components
+        ctrl = [p if len(p) >= 3 else [p[0], 0.0, p[1]] for p in ctrl]
+
+        # 2. 3D arc-length parameterization of the control polygon
         arc = [0.0]
         for i in range(1, len(ctrl)):
             dx = ctrl[i][0] - ctrl[i - 1][0]
-            dz = ctrl[i][1] - ctrl[i - 1][1]
-            arc.append(arc[-1] + math.hypot(dx, dz))
+            dy = ctrl[i][1] - ctrl[i - 1][1]
+            dz = ctrl[i][2] - ctrl[i - 1][2]
+            arc.append(arc[-1] + math.sqrt(dx * dx + dy * dy + dz * dz))
         total = arc[-1]
 
-        # 3. Evenly-spaced waypoints along the arc
+        # 3. Evenly-spaced waypoints along the arc (3D interpolation)
         if total < 1e-8:
             wps = [ctrl[0]] * num_waypoints
         else:
@@ -1907,20 +1908,21 @@ class Kimodo_MotionPath:
                 seg_len = arc[seg + 1] - arc[seg]
                 frac = (target - arc[seg]) / seg_len if seg_len > 0 else 0.0
                 x = ctrl[seg][0] + frac * (ctrl[seg + 1][0] - ctrl[seg][0])
-                z = ctrl[seg][1] + frac * (ctrl[seg + 1][1] - ctrl[seg][1])
-                wps.append([x, z])
+                y = ctrl[seg][1] + frac * (ctrl[seg + 1][1] - ctrl[seg][1])
+                z = ctrl[seg][2] + frac * (ctrl[seg + 1][2] - ctrl[seg][2])
+                wps.append([x, y, z])
 
-        # 4. Headings (direction of travel)
+        # 4. Headings (direction of travel, computed from XZ components)
         last_angle = math.radians(fixed_heading)
         headings = []
         for i in range(num_waypoints):
             if compute_heading:
                 if i + 1 < num_waypoints:
                     dx = wps[i + 1][0] - wps[i][0]
-                    dz = wps[i + 1][1] - wps[i][1]
+                    dz = wps[i + 1][2] - wps[i][2]
                 elif i > 0:
                     dx = wps[i][0] - wps[i - 1][0]
-                    dz = wps[i][1] - wps[i - 1][1]
+                    dz = wps[i][2] - wps[i - 1][2]
                 else:
                     dx, dz = 0.0, 0.0
                 if abs(dx) > 1e-8 or abs(dz) > 1e-8:
@@ -1931,7 +1933,7 @@ class Kimodo_MotionPath:
 
         # 5. Canonicalize (subtract first waypoint XZ)
         ox = wps[0][0] if auto_canonicalize else 0.0
-        oz = wps[0][1] if auto_canonicalize else 0.0
+        oz = wps[0][2] if auto_canonicalize else 0.0
 
         # 6. Frame mapping: evenly distributed across [start_frame, end_frame]
         total_frames = end_frame - start_frame
@@ -1942,7 +1944,7 @@ class Kimodo_MotionPath:
             frac = i / (num_waypoints - 1) if num_waypoints > 1 else 0.0
             kf = start_frame + round(frac * total_frames)
             frame_indices.append(kf)
-            smooth_root_2d.append([wps[i][0] - ox, wps[i][1] - oz])
+            smooth_root_2d.append([wps[i][0] - ox, wps[i][2] - oz])
             global_root_heading.append([math.cos(headings[i]), math.sin(headings[i])])
 
         # 7. Build constraint dict
@@ -1969,7 +1971,8 @@ class Kimodo_MotionPath:
     def _parse_points(text: str) -> list[list[float]]:
         """Parse control points from text input.
 
-        Accepts one 'x, z' per line, or comma-separated x1,z1,x2,z2,...
+        Accepts one 'x, y, z' per line (3D) or 'x, z' per line (2D),
+        or comma-separated x1,y1,z1,x2,y2,z2,...
         """
         text = text.strip()
         if not text:
@@ -1981,7 +1984,12 @@ class Kimodo_MotionPath:
             if not line or line.startswith("#"):
                 continue
             parts = [p.strip() for p in line.replace(",", " ").split() if p.strip()]
-            if len(parts) >= 2:
+            if len(parts) >= 3:
+                try:
+                    points.append([float(parts[0]), float(parts[1]), float(parts[2])])
+                except ValueError:
+                    continue
+            elif len(parts) >= 2:
                 try:
                     points.append([float(parts[0]), float(parts[1])])
                 except ValueError:
@@ -1990,10 +1998,16 @@ class Kimodo_MotionPath:
         # Fallback: comma-separated flat list
         if not points and "," in text:
             flat = [p.strip() for p in text.replace("\n", ",").split(",") if p.strip()]
-            if len(flat) >= 4 and len(flat) % 2 == 0:
+            if len(flat) >= 6 and len(flat) % 3 == 0:
+                for i in range(0, len(flat), 3):
+                    try:
+                        points.append([float(flat[i]), float(flat[i + 1]), float(flat[i + 2])])
+                    except ValueError:
+                        break
+            if not points and len(flat) >= 4 and len(flat) % 2 == 0:
                 for i in range(0, len(flat), 2):
                     try:
-                        points.append([float(flat[i]), float(flat[i + 1])])
+                        points.append([float(flat[i]), 0.0, float(flat[i + 1])])
                     except ValueError:
                         break
         return points
@@ -2004,10 +2018,10 @@ class Kimodo_MotionPath:
 # ---------------------------------------------------------------------------
 
 class Kimodo_CurveToPoints:
-    """Visual curve editor — place control points to define a 2D motion path.
+    """3D curve editor — place control points to define a 3D motion path.
 
-    The curve is drawn as a smooth monotone cubic Hermite spline.
-    Outputs a point string (one ``x, z`` per line) that connects directly
+    Uses a three.js 3D viewport for interactive editing.
+    Outputs a point string (one ``x, y, z`` per line) that connects directly
     to ``Kimodo_MotionPath`` for waypoint generation.
     """
     @classmethod
@@ -2041,27 +2055,44 @@ class Kimodo_CurveToPoints:
             ctrl = []
 
         if not isinstance(ctrl, list) or len(ctrl) < 2:
-            ctrl = [{"x": 0.0, "y": 0.0}, {"x": 1.0, "y": 1.0}]
+            ctrl = [
+                {"x": 0.0, "y": 0.0, "z": 0.0},
+                {"x": 2.0, "y": 2.0, "z": 2.0},
+                {"x": 4.0, "y": 0.0, "z": 4.0},
+            ]
 
-        pts = [[p["x"], p["y"]] for p in ctrl]
+        # Parse 3D points; handle backward compat (old format: x=param, y=Z)
+        pts = []
+        for p in ctrl:
+            x = p.get("x", 0.0)
+            if "z" in p:
+                pts.append([x, p.get("y", 0.0), p["z"]])
+            else:
+                # Old 2D format: x=param, y=Z → map to x,y=0,z
+                pts.append([x, 0.0, p.get("y", 0.0)])
 
-        if num_samples == 0 or len(pts) == 2 and pts == [[0.0, 0.0], [1.0, 1.0]]:
-            lines = "\n".join(f"{x:.6f}, {z:.6f}" for x, z in pts)
+        if num_samples == 0:
+            lines = "\n".join(f"{p[0]:.6f}, {p[1]:.6f}, {p[2]:.6f}" for p in pts)
             return (lines,)
 
         xs = [p[0] for p in pts]
-        zs = [p[1] for p in pts]
+        ys = [p[1] for p in pts]
+        zs = [p[2] for p in pts]
 
-        # Chord-length parameterisation
+        # 3D chord-length parameterisation
         chords = [0.0]
         for i in range(1, len(pts)):
             dx = pts[i][0] - pts[i - 1][0]
-            dz = pts[i][1] - pts[i - 1][1]
-            chords.append(chords[-1] + math.hypot(dx, dz))
+            dy = pts[i][1] - pts[i - 1][1]
+            dz = pts[i][2] - pts[i - 1][2]
+            chords.append(chords[-1] + math.sqrt(dx * dx + dy * dy + dz * dz))
         total = chords[-1]
 
         if total < 1e-8:
-            lines = "\n".join(f"{pts[0][0]:.6f}, {pts[0][1]:.6f}" for _ in range(num_samples))
+            lines = "\n".join(
+                f"{pts[0][0]:.6f}, {pts[0][1]:.6f}, {pts[0][2]:.6f}"
+                for _ in range(num_samples)
+            )
             return (lines,)
 
         t = [c / total for c in chords]
@@ -2069,12 +2100,17 @@ class Kimodo_CurveToPoints:
 
         from scipy.interpolate import PchipInterpolator
         fx = PchipInterpolator(t, xs)
+        fy = PchipInterpolator(t, ys)
         fz = PchipInterpolator(t, zs)
 
         out_xs = fx(t_samples)
+        out_ys = fy(t_samples)
         out_zs = fz(t_samples)
 
-        lines = "\n".join(f"{x:.6f}, {z:.6f}" for x, z in zip(out_xs, out_zs))
+        lines = "\n".join(
+            f"{x:.6f}, {y:.6f}, {z:.6f}"
+            for x, y, z in zip(out_xs, out_ys, out_zs)
+        )
         return (lines,)
 
 
