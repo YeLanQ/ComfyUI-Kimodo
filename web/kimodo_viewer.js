@@ -235,10 +235,7 @@ app.registerExtension({
       iframe.style.display = "block";
 
       const html = VIEWER_HTML.replace(/__THREE_BASE_URL__/g, threeBaseUrl);
-      const blob = new Blob([html], { type: "text/html" });
-      const blobUrl = URL.createObjectURL(blob);
-      iframe.src = blobUrl;
-      iframe.addEventListener("load", () => { iframe._blobUrl = blobUrl; });
+      iframe.srcdoc = html;
 
       const widget = this.addDOMWidget("preview3d", "KIMODO_3D_PREVIEW", iframe, {
         getValue() { return ""; },
@@ -278,7 +275,6 @@ app.registerExtension({
       const origRemoved = this.onRemoved;
       this.onRemoved = function () {
         ro.disconnect();
-        if (iframe._blobUrl) URL.revokeObjectURL(iframe._blobUrl);
         origRemoved?.apply(this, arguments);
       };
 

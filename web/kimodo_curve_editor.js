@@ -484,10 +484,7 @@ app.registerExtension({
       iframe.style.display = "block";
 
       const html = EDITOR_HTML.replace(/__THREE_BASE_URL__/g, __threeBaseUrl);
-      const blob = new Blob([html], { type: "text/html" });
-      const blobUrl = URL.createObjectURL(blob);
-      iframe.src = blobUrl;
-      iframe.addEventListener("load", () => { iframe._blobUrl = blobUrl; });
+      iframe.srcdoc = html;
 
       const widget = this.addDOMWidget("curve3d", "KIMODO_CURVE_3D", iframe, {
         getValue() { return ""; },
@@ -523,7 +520,6 @@ app.registerExtension({
       const origRemoved = this.onRemoved;
       this.onRemoved = function () {
         ro.disconnect();
-        if (iframe._blobUrl) URL.revokeObjectURL(iframe._blobUrl);
         origRemoved?.apply(this, arguments);
       };
 
