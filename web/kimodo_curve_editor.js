@@ -151,8 +151,8 @@ const orbitControls = new OrbitControls(camera, canvas);
 orbitControls.target.set(2, 0, 2);
 orbitControls.mouseButtons = {
   LEFT: THREE.MOUSE.ROTATE,
-  MIDDLE: THREE.MOUSE.DOLLY,
-  RIGHT: THREE.MOUSE.PAN,
+  MIDDLE: THREE.MOUSE.PAN,
+  RIGHT: THREE.MOUSE.DOLLY,
 };
 orbitControls.touches = {
   ONE: THREE.TOUCH.PAN,
