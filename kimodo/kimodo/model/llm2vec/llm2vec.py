@@ -58,6 +58,14 @@ from transformers import (
     Qwen2Config,
 )
 
+# Some newer models export tokenizer_config.json with "tokenizer_class": "TokenizersBackend",
+# which doesn't exist in older transformers versions. Register an alias so AutoTokenizer
+# can resolve it at load time.
+import transformers as _transformers
+
+if not hasattr(_transformers, "TokenizersBackend"):
+    _transformers.TokenizersBackend = _transformers.PreTrainedTokenizerFast
+
 logger = logging.getLogger(__name__)
 
 
