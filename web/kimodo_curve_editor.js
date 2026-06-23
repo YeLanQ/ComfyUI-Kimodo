@@ -33,7 +33,7 @@ const EDITOR_HTML = `<!DOCTYPE html>
 <body>
 <canvas id="c"></canvas>
 <div id="info">3D Curve · <span id="ptCount">0</span> pts</div>
-<div id="hint">Left-click: select/add · Drag gizmo: move · Del: delete · Right-drag: orbit · Scroll: zoom</div>
+<div id="hint">Left-click: select/add · Drag point: move · Del: delete · Right-drag: orbit · Scroll: zoom</div>
 <script type="importmap">
 {"imports":{
   "three":"__THREE_BASE_URL__/three/three.module.js",
@@ -101,6 +101,13 @@ let curveReady = false;
 const curveRes = 100;
 const maxPoints = 24;
 const ptRadius = 0.18;
+
+// ---- direct drag state ----
+let isDraggingPoint = false;
+let dragPointIdx = -1;
+let dragPlane = new THREE.Plane();
+let dragOffset = new THREE.Vector3();
+const _dragIsect = new THREE.Vector3();
 
 // ---- renderer ----
 const canvas = document.getElementById('c');
@@ -295,6 +302,10 @@ function updatePointVisuals() {
 function loadCurve(data) {
   points = data.map(p => ({ x: p.x ?? 0, y: p.y ?? 0, z: p.z ?? 0 }));
   selectedIdx = -1;
+  isDraggingPoint = false;
+  dragPointIdx = -1;
+  pendingHitIdx = -1;
+  orbitControls.enabled = true;
   if (transformControls.object) {
     transformControls.detach();
   }
@@ -349,23 +360,93 @@ function hitTestGround(clientX, clientY) {
 // ---- mouse handling ----
 let mouseDownPos = { x: 0, y: 0 };
 let isPointerDown = false;
+let pendingHitIdx = -1;
 
 canvas.addEventListener('pointerdown', (e) => {
   mouseDownPos.x = e.clientX;
   mouseDownPos.y = e.clientY;
   isPointerDown = true;
+
+  // Check if we hit a point → prepare for potential direct drag
+  if (e.button === 0) {
+    pendingHitIdx = hitTestPoint(e.clientX, e.clientY);
+  } else {
+    pendingHitIdx = -1;
+  }
+});
+
+canvas.addEventListener('pointermove', (e) => {
+  // Continuous drag update
+  if (isDraggingPoint && dragPointIdx >= 0) {
+    const rect = canvas.getBoundingClientRect();
+    pointer.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+    pointer.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+    raycaster.setFromCamera(pointer, camera);
+    _dragIsect.set(0, 0, 0);
+    if (raycaster.ray.intersectPlane(dragPlane, _dragIsect)) {
+      _dragIsect.add(dragOffset);
+      points[dragPointIdx].x = _dragIsect.x;
+      points[dragPointIdx].y = _dragIsect.y;
+      points[dragPointIdx].z = _dragIsect.z;
+      if (pointGroup.children[dragPointIdx]) {
+        pointGroup.children[dragPointIdx].position.copy(_dragIsect);
+      }
+      rebuildCurve();
+    }
+    return;
+  }
+
+  // Start drag from a point hit
+  if (!isPointerDown || pendingHitIdx < 0 || e.buttons !== 1) return;
+  const dx = e.clientX - mouseDownPos.x;
+  const dy = e.clientY - mouseDownPos.y;
+  if (dx * dx + dy * dy < 25) return;
+
+  isDraggingPoint = true;
+  dragPointIdx = pendingHitIdx;
+  pendingHitIdx = -1;
+
+  orbitControls.enabled = false;
+  if (transformControls.object) transformControls.detach();
+
+  selectPoint(dragPointIdx);
+
+  const p = points[dragPointIdx];
+  const pointPos = new THREE.Vector3(p.x, p.y, p.z);
+  const camDir = new THREE.Vector3();
+  camera.getWorldDirection(camDir);
+  dragPlane.setFromNormalAndCoplanarPoint(camDir, pointPos);
+
+  const rect = canvas.getBoundingClientRect();
+  pointer.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+  pointer.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+  raycaster.setFromCamera(pointer, camera);
+  _dragIsect.set(0, 0, 0);
+  if (raycaster.ray.intersectPlane(dragPlane, _dragIsect)) {
+    dragOffset.copy(pointPos).sub(_dragIsect);
+  }
 });
 
 canvas.addEventListener('pointerup', (e) => {
   if (!isPointerDown) return;
   isPointerDown = false;
+
+  if (isDraggingPoint) {
+    isDraggingPoint = false;
+    dragPointIdx = -1;
+    orbitControls.enabled = true;
+    notifyParent();
+    return;
+  }
+
+  pendingHitIdx = -1;
   const dx = e.clientX - mouseDownPos.x;
   const dy = e.clientY - mouseDownPos.y;
   const dist = Math.sqrt(dx * dx + dy * dy);
 
   // Ignore drags (orbit/transform movement)
   if (dist > 5) return;
-  if (e.button !== 0) return; // left click only
+  if (e.button !== 0) return;
 
   // Check point hit
   const hitIdx = hitTestPoint(e.clientX, e.clientY);
@@ -374,7 +455,7 @@ canvas.addEventListener('pointerup', (e) => {
     return;
   }
 
-  // Empty click: deselect + add point on ground
+  // Empty click: deselect or add point on ground
   if (points.length >= maxPoints) return;
   const hit = hitTestGround(e.clientX, e.clientY);
   if (hit) {
@@ -384,9 +465,18 @@ canvas.addEventListener('pointerup', (e) => {
     selectPoint(points.length - 1);
     notifyParent();
   } else {
-    // Deselect
     selectPoint(-1);
   }
+});
+
+canvas.addEventListener('pointercancel', () => {
+  if (isDraggingPoint) {
+    isDraggingPoint = false;
+    dragPointIdx = -1;
+    orbitControls.enabled = true;
+  }
+  isPointerDown = false;
+  pendingHitIdx = -1;
 });
 
 canvas.addEventListener('contextmenu', (e) => e.preventDefault());
