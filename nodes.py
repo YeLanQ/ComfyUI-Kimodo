@@ -172,6 +172,58 @@ class KimodoMotionData:
         self.skeleton = skeleton              # skeleton object (for post-process)
         self.constraint_lst = constraint_lst  # constraints (for post-process)
 
+    def reorder_joints(self, src_to_tgt_idx: list[int], tgt_joint_names: list[str],
+                       tgt_joint_parents: list[int] | None = None) -> "KimodoMotionData":
+        """Return a new KimodoMotionData with joints reordered/selected via *src_to_tgt_idx*.
+
+        Each element of *src_to_tgt_idx* is the source joint index that maps to
+        position ``i`` in the output.  ``tgt_joint_names`` and (optionally)
+        ``tgt_joint_parents`` become the metadata on the returned motion.
+        """
+        od = self.output_dict
+        new_od = dict(od)
+
+        for key in ("posed_joints",):
+            if key in od and od[key].ndim >= 3:
+                new_od[key] = od[key][..., src_to_tgt_idx, :]
+
+        for key in ("global_rot_mats", "local_rot_mats"):
+            if key in od and od[key].shape[-2] >= len(src_to_tgt_idx):
+                new_od[key] = od[key][..., src_to_tgt_idx, :, :]
+
+        tgt_parents = tgt_joint_parents if tgt_joint_parents is not None else [-1] * len(tgt_joint_names)
+
+        return KimodoMotionData(
+            output_dict=new_od,
+            model_name=self.model_name,
+            skeleton_name=self.skeleton_name,
+            fps=self.fps,
+            texts=self.texts,
+            num_frames=self.num_frames,
+            num_samples=self.num_samples,
+            joint_parents=tgt_parents,
+            joint_names=tgt_joint_names,
+            neutral_joints=None,
+            skeleton=self.skeleton,
+            constraint_lst=self.constraint_lst,
+        )
+
+
+class KimodoSkeletonData:
+    """Wraps skeleton definition data for passing between nodes.
+
+    Can be extracted from a loaded model or from generated motion data.
+    """
+    def __init__(self, joint_names: list[str], joint_parents: list[int],
+                 neutral_joints=None, skeleton_name: str = "",
+                 skeleton=None):
+        self.joint_names = joint_names        # list of strings
+        self.joint_parents = joint_parents    # list of ints (-1 for root)
+        self.neutral_joints = neutral_joints  # [J, 3] or None
+        self.skeleton_name = skeleton_name    # e.g. "somaskel30"
+        self.skeleton = skeleton              # SkeletonBase instance or None
+        self.num_joints = len(joint_names)
+
 
 # ---------------------------------------------------------------------------
 # Node: Load Model
@@ -964,6 +1016,315 @@ class Kimodo_Config:
 
 
 # ---------------------------------------------------------------------------
+# Skeleton operation nodes
+# ---------------------------------------------------------------------------
+
+class Kimodo_SkeletonInfo:
+    """Extract skeleton metadata from motion data.
+
+    Inspired by the bone hierarchy inspection in Kimodo_Blender_Bridge's
+    retarget.py and properties.py — exposes joint names, parent indices,
+    and rest-pose positions for inspection or downstream use.
+    """
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "motion": ("KIMODO_MOTION",),
+            },
+        }
+
+    RETURN_TYPES = ("KIMODO_SKELETON", "STRING", "STRING")
+    RETURN_NAMES = ("skeleton", "joint_names_text", "summary")
+    FUNCTION = "extract"
+    CATEGORY = "Kimodo/Skeleton"
+
+    def extract(self, motion):
+        joint_names = motion.joint_names or []
+        joint_parents = motion.joint_parents or []
+        neutral_joints = motion.neutral_joints
+
+        # Build formatted name list with hierarchy
+        lines = []
+        for i, name in enumerate(joint_names):
+            p_idx = joint_parents[i] if i < len(joint_parents) else -1
+            parent_name = joint_names[p_idx] if p_idx >= 0 and p_idx < len(joint_names) else "ROOT"
+            lines.append(f"  [{i:2d}] {name:30s} parent={parent_name}")
+
+        names_text = "\n".join(lines)
+
+        skel_name = motion.skeleton_name or "unknown"
+        n_joints = len(joint_names)
+        summary = (
+            f"Skeleton: {skel_name}\n"
+            f"Joints  : {n_joints}\n"
+            f"FPS     : {motion.fps}\n"
+            f"Samples : {motion.batch_size}\n"
+            f"Frames  : {motion.num_frames}"
+        )
+
+        skel_data = KimodoSkeletonData(
+            joint_names=joint_names,
+            joint_parents=joint_parents,
+            neutral_joints=neutral_joints,
+            skeleton_name=skel_name,
+            skeleton=motion.skeleton,
+        )
+
+        return (skel_data, names_text, summary)
+
+
+class Kimodo_Retarget:
+    """Retarget motion by remapping/reordering joints via a bone name mapping.
+
+    Inspired by Kimodo_Blender_Bridge's retarget.py — bone-pair mappings
+    define how source bones map to output bones.  Supports three modes:
+
+      * **Explicit mapping** — each line in the mapping text is a pair::
+
+            source_bone -> target_bone
+
+        Lines starting with ``#`` are ignored.  Unmapped source bones are
+        dropped; target bones without a source are filled with zeros.
+
+      * **Auto name match** — leave the mapping empty or set it to ``auto``
+        and the node tries to align bone names case-insensitively.
+
+      * **Identity** — pass ``identity`` to get a copy with the same bone
+        order (useful as a passthrough that normalises the data wrapper).
+    """
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "motion": ("KIMODO_MOTION",),
+                "bone_mapping": ("STRING", {
+                    "default": "",
+                    "multiline": True,
+                    "tooltip": (
+                        "Bone remapping. One 'src -> tgt' per line, or:\n"
+                        "  'auto'     — case-insensitive name match\n"
+                        "  'identity' — keep current order\n"
+                        "  empty      — same as 'auto'"
+                    ),
+                }),
+            },
+        }
+
+    RETURN_TYPES = ("KIMODO_MOTION",)
+    RETURN_NAMES = ("motion",)
+    FUNCTION = "retarget"
+    CATEGORY = "Kimodo/Skeleton"
+
+    def retarget(self, motion, bone_mapping):
+        src_names = motion.joint_names or []
+        if not src_names:
+            print("[Kimodo_Retarget] No joint names on motion — returning as-is.", flush=True)
+            return (motion,)
+
+        mapping = (bone_mapping or "").strip().lower()
+
+        if mapping in ("", "auto"):
+            return self._auto_retarget(motion, src_names)
+        elif mapping == "identity":
+            return (motion,)
+
+        return self._explicit_retarget(motion, src_names, bone_mapping)
+
+    def _auto_retarget(self, motion, src_names):
+        """Case-insensitive name matching (same as Blender's auto_build_mapping)."""
+        src_lower = {n.lower(): n for n in src_names}
+        tgt_order = list(src_names)  # default: same order
+
+        # Try to sort so that "Hips" comes first, then spine, etc.
+        def _priority(name: str) -> int:
+            low = name.lower()
+            if "hip" in low:
+                return 0
+            if "spine" in low or "chest" in low:
+                return 1
+            if "neck" in low or "head" in low:
+                return 2
+            if "shoulder" in low:
+                return 3
+            if "arm" in low or "forearm" in low or "hand" in low:
+                return 4
+            if "leg" in low or "shin" in low or "foot" in low or "toe" in low:
+                return 5
+            return 6
+
+        tgt_order.sort(key=_priority)
+
+        # Build index mapping: for each target bone, find the source index
+        tgt_final: list[str] = []
+        idx_map: list[int] = []
+        for tgt in tgt_order:
+            tgt_low = tgt.lower()
+            found = None
+            for i, s in enumerate(src_names):
+                if s.lower() == tgt_low:
+                    found = i
+                    break
+            if found is not None:
+                tgt_final.append(src_names[found])
+                idx_map.append(found)
+
+        if not idx_map:
+            print("[Kimodo_Retarget] Auto-map found no matches — returning as-is.", flush=True)
+            return (motion,)
+
+        # Rebuild parent indices for the new ordering
+        src_to_new = {old: new for new, old in enumerate(idx_map)}
+        tgt_parents = []
+        for tgt_name in tgt_final:
+            orig_idx = src_names.index(tgt_name) if tgt_name in src_names else -1
+            orig_parent = motion.joint_parents[orig_idx] if orig_idx >= 0 and motion.joint_parents and orig_idx < len(motion.joint_parents) else -1
+            if orig_parent >= 0 and orig_parent in src_to_new:
+                tgt_parents.append(src_to_new[orig_parent])
+            else:
+                tgt_parents.append(-1)
+
+        result = motion.reorder_joints(idx_map, tgt_final, tgt_parents)
+        n = len(idx_map)
+        print(f"[Kimodo_Retarget] Auto-mapped {n} bones ({len(src_names)} → {n})", flush=True)
+        return (result,)
+
+    def _explicit_retarget(self, motion, src_names, bone_mapping):
+        """Parse user-provided 'src -> tgt' lines."""
+        src_name_set = {n.lower(): n for n in src_names}
+
+        tgt_final: list[str] = []
+        idx_map: list[int] = []
+
+        for raw_line in bone_mapping.strip().split("\n"):
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            # Accept "->", "→", "=" as separators
+            sep = None
+            for s in ("->", "→", "="):
+                if s in line:
+                    sep = s
+                    break
+            if sep is None:
+                continue
+            src_part, tgt_part = line.split(sep, 1)
+            src_name = src_part.strip()
+            tgt_name = tgt_part.strip()
+            if not src_name or not tgt_name:
+                continue
+
+            # Find source index
+            src_low = src_name.lower()
+            found = None
+            for i, s in enumerate(src_names):
+                if s.lower() == src_low:
+                    found = i
+                    break
+            if found is None:
+                print(f"[Kimodo_Retarget] Source bone '{src_name}' not found — skipping.", flush=True)
+                continue
+
+            tgt_final.append(tgt_name)
+            idx_map.append(found)
+
+        if not idx_map:
+            print("[Kimodo_Retarget] No valid mappings — returning as-is.", flush=True)
+            return (motion,)
+
+        # Build parent indices for output skeleton
+        src_to_new = {old: new for new, old in enumerate(idx_map)}
+        tgt_parents = []
+        for i, tgt_name in enumerate(tgt_final):
+            orig_idx = idx_map[i]
+            orig_parent = motion.joint_parents[orig_idx] if motion.joint_parents and orig_idx < len(motion.joint_parents) else -1
+            if orig_parent >= 0 and orig_parent in src_to_new:
+                tgt_parents.append(src_to_new[orig_parent])
+            else:
+                tgt_parents.append(-1)
+
+        result = motion.reorder_joints(idx_map, tgt_final, tgt_parents)
+        n = len(idx_map)
+        print(f"[Kimodo_Retarget] Applied {n} bone mappings ({len(src_names)} → {n})", flush=True)
+        return (result,)
+
+
+class Kimodo_SelectBones:
+    """Select a subset of bones from motion data by name.
+
+    Provide one or more bone names separated by commas or newlines.
+    Only the listed bones are kept in the output motion; all others
+    are removed.  Useful for isolating specific body parts.
+    """
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "motion": ("KIMODO_MOTION",),
+                "bone_names": ("STRING", {
+                    "default": "",
+                    "multiline": True,
+                    "tooltip": "Bone names to keep, comma or newline separated. Leave empty to keep all.",
+                }),
+            },
+        }
+
+    RETURN_TYPES = ("KIMODO_MOTION",)
+    RETURN_NAMES = ("motion",)
+    FUNCTION = "select"
+    CATEGORY = "Kimodo/Skeleton"
+
+    def select(self, motion, bone_names):
+        src_names = motion.joint_names or []
+        if not src_names:
+            return (motion,)
+
+        bone_names = (bone_names or "").strip()
+        if not bone_names:
+            return (motion,)
+
+        # Parse bone name list (comma or newline separated)
+        wanted: list[str] = []
+        for chunk in bone_names.replace(",", "\n").split("\n"):
+            name = chunk.strip()
+            if name:
+                wanted.append(name)
+
+        if not wanted:
+            return (motion,)
+
+        # Build index mapping (case-insensitive)
+        src_lower = {n.lower(): (i, n) for i, n in enumerate(src_names)}
+        idx_map: list[int] = []
+        kept_names: list[str] = []
+        for w in wanted:
+            w_low = w.lower()
+            if w_low in src_lower:
+                i, orig = src_lower[w_low]
+                idx_map.append(i)
+                kept_names.append(orig)
+
+        if not idx_map:
+            print("[Kimodo_SelectBones] No matching bones found — returning as-is.", flush=True)
+            return (motion,)
+
+        # Rebuild parent indices
+        src_to_new = {old: new for new, old in enumerate(idx_map)}
+        tgt_parents = []
+        for i in idx_map:
+            orig_parent = motion.joint_parents[i] if motion.joint_parents and i < len(motion.joint_parents) else -1
+            if orig_parent >= 0 and orig_parent in src_to_new:
+                tgt_parents.append(src_to_new[orig_parent])
+            else:
+                tgt_parents.append(-1)
+
+        result = motion.reorder_joints(idx_map, kept_names, tgt_parents)
+        n = len(idx_map)
+        print(f"[Kimodo_SelectBones] Selected {n}/{len(src_names)} bones", flush=True)
+        return (result,)
+
+
+# ---------------------------------------------------------------------------
 # Node mappings
 # ---------------------------------------------------------------------------
 NODE_CLASS_MAPPINGS = {
@@ -984,6 +1345,10 @@ NODE_CLASS_MAPPINGS = {
     "Kimodo_SaveNPZ": Kimodo_SaveNPZ,
     "Kimodo_ExportBVH": Kimodo_ExportBVH,
     "Kimodo_ExportFBX": Kimodo_ExportFBX,
+    # Skeleton operations
+    "Kimodo_SkeletonInfo": Kimodo_SkeletonInfo,
+    "Kimodo_Retarget": Kimodo_Retarget,
+    "Kimodo_SelectBones": Kimodo_SelectBones,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -997,4 +1362,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "Kimodo_SaveNPZ": "Kimodo Save NPZ",
     "Kimodo_ExportBVH": "Kimodo Export BVH",
     "Kimodo_ExportFBX": "Kimodo Export FBX (Mixamo)",
+    "Kimodo_SkeletonInfo": "Kimodo Skeleton Info",
+    "Kimodo_Retarget": "Kimodo Retarget",
+    "Kimodo_SelectBones": "Kimodo Select Bones",
 }
