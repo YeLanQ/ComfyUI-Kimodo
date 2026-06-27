@@ -582,8 +582,6 @@ def retarget_animation(
                 prot = tgt_world_anims.get(pname, {}).get(f)
                 if prot is None:
                     prot = tgt.node_rest_rotations.get(pname, np.array([1, 0, 0, 0]))
-                    if yaw_offset != 0:
-                        prot = _quat_mul(yaw_q, prot)
                 p_rot_inv = R.from_quat([prot[1], prot[2], prot[3], prot[0]]).inv()
                 local_disp = p_rot_inv.apply(disp_scaled)
 
@@ -603,8 +601,6 @@ def retarget_animation(
             prot = tgt_world_anims.get(pname, {}).get(f)
             if prot is None:
                 prot = tgt.node_rest_rotations.get(pname, np.array([1, 0, 0, 0]))
-                if yaw_offset != 0:
-                    prot = _quat_mul(yaw_q, prot)
             l_rot = _quat_mul(_quat_inv(prot), tgt_world_anims[t_bone.name][f])
             ret_rots[t_bone.name][f] = l_rot
 
@@ -825,6 +821,220 @@ def _save_fbx(manager, scene, path: str):
 
 
 # ============================================================================
+# Foot Contact Root Correction (reduce sliding)
+# ============================================================================
+
+def _get_foot_chains(tgt_skel: SkeletonData, mapping: dict) -> list:
+    """Build bone chains [root → foot] for each foot using target bone names.
+    Returns [(foot_target_name, [root_name, ...chain..., foot_name]), ...]
+    """
+    leg_defs = [
+        ("leftfoot",  ["hips", "leftleg", "leftshin", "leftfoot"]),
+        ("rightfoot", ["rightleg", "rightshin", "rightfoot"]),
+    ]
+    chains = []
+    for foot_key, soma_keys in leg_defs:
+        tgt_names = []
+        ok = True
+        for sk in soma_keys:
+            tk = mapping.get(sk)
+            if tk is None:
+                ok = False
+                break
+            tb = tgt_skel.get_bone(tk)
+            if tb is None:
+                ok = False
+                break
+            tgt_names.append(tb.name)
+        # Prepend root (hips) if not already in chain
+        if ok:
+            root_tk = mapping.get("hips")
+            if root_tk and root_tk not in tgt_names:
+                root_bone = tgt_skel.get_bone(root_tk)
+                if root_bone:
+                    tgt_names.insert(0, root_bone.name)
+        if ok and len(tgt_names) >= 3:
+            chains.append((tgt_names[-1], tgt_names))
+    return chains
+
+
+def _fk_foot_positions(
+    tgt_skel: SkeletonData,
+    ret_rots: dict,
+    ret_locs: dict,
+    chains: list,
+    frames,
+) -> dict:
+    """Forward-kinematics foot world positions for every frame.
+    Returns {foot_target_name: {frame: [x, y, z]}}.
+    """
+    foot_positions = {}
+    for foot_name, chain in chains:
+        foot_positions[foot_name] = {}
+        for f in frames:
+            R_w = np.eye(3)
+            P_w = np.zeros(3)
+            for bname in chain:
+                bone = tgt_skel.get_bone(bname)
+                if bone is None:
+                    continue
+                if bname == chain[0]:  # root (hips)
+                    loc = ret_locs.get(bname, {}).get(f, bone.local_matrix[3, :3])
+                    rot_q = ret_rots.get(bname, {}).get(f, bone.rest_rotation)
+                    R_w = R.from_quat([rot_q[1], rot_q[2], rot_q[3], rot_q[0]]).as_matrix()
+                    P_w = loc.copy()
+                else:
+                    t_local = bone.local_matrix[3, :3]
+                    P_w = P_w + R_w @ t_local
+                    rot_q = ret_rots.get(bname, {}).get(f, bone.rest_rotation)
+                    R_local = R.from_quat([rot_q[1], rot_q[2], rot_q[3], rot_q[0]]).as_matrix()
+                    R_w = R_w @ R_local
+            foot_positions[foot_name][f] = P_w
+    return foot_positions
+
+
+def _detect_contacts(
+    foot_positions: dict,
+    frames,
+    vel_threshold: float = 0.008,
+    height_threshold: float = 0.2,
+) -> dict:
+    """Detect foot contact frames via velocity + height heuristics.
+    Returns {foot_name: set_of_contact_frames}.
+    """
+    frame_list = sorted(foot_positions[next(iter(foot_positions))].keys()) if foot_positions else list(frames)
+    contacts = {}
+    for foot_name, pos_data in foot_positions.items():
+        velocities = []
+        for i in range(len(frame_list) - 1):
+            v = np.linalg.norm(pos_data[frame_list[i + 1]] - pos_data[frame_list[i]])
+            velocities.append(v)
+        if not velocities:
+            continue
+        avg_vel = sum(velocities) / len(velocities)
+        adaptive_thr = max(vel_threshold, avg_vel * 0.35)
+
+        contacts[foot_name] = set()
+        for i, f in enumerate(frame_list):
+            if i == 0:
+                vel = velocities[0] if velocities else 0.0
+            elif i == len(frame_list) - 1:
+                vel = velocities[-1] if velocities else 0.0
+            else:
+                vel = (velocities[i - 1] + velocities[i]) * 0.5
+            height = pos_data[f][1]
+            if vel < adaptive_thr and height < height_threshold:
+                contacts[foot_name].add(f)
+    return contacts
+
+
+def _smooth_contact_correction(
+    corrected: dict,
+    frames,
+    window: int = 3,
+):
+    """Box-blend correction near contact boundaries to avoid popping."""
+    keys = sorted(corrected.keys())
+    for f in frames:
+        weights = 0.0
+        blended = np.zeros(3)
+        for df in range(-window, window + 1):
+            nf = f + df
+            if nf in corrected:
+                w = 1.0 - abs(df) / (window + 1.0)
+                blended += corrected[nf] * w
+                weights += w
+        if weights > 0:
+            corrected[f] = blended / weights
+
+
+def correct_root_with_foot_contact(
+    tgt_skel: SkeletonData,
+    ret_rots: dict,
+    ret_locs: dict,
+    mapping: dict,
+    frames,
+) -> dict:
+    """Detect foot contacts and adjust root translation to reduce sliding.
+
+    Must be called *after* retarget_animation, *before* apply_animation_to_scene.
+    """
+    if not ret_locs or not ret_rots:
+        _log("  [FootContact] No animation data to correct")
+        return ret_locs
+
+    chains = _get_foot_chains(tgt_skel, mapping)
+    if not chains:
+        _log("  [FootContact] Could not build foot chains — skipping correction")
+        return ret_locs
+
+    _log(f"  [FootContact] Foot chains built: {[c[0] for c in chains]}")
+
+    foot_pos = _fk_foot_positions(tgt_skel, ret_rots, ret_locs, chains, frames)
+    contacts = _detect_contacts(foot_pos, frames)
+
+    total_contact = sum(len(v) for v in contacts.values())
+    _log(f"  [FootContact] Contact frames: {total_contact} total across {len(contacts)} feet")
+    if total_contact == 0:
+        _log("  [FootContact] No contacts detected — skipping correction")
+        return ret_locs
+
+    # Group contact frames into continuous phases per foot
+    phases = []
+    for foot_name, cframes in contacts.items():
+        sorted_cf = sorted(cframes)
+        if len(sorted_cf) < 3:
+            continue
+        cur_phase = [sorted_cf[0]]
+        for i in range(1, len(sorted_cf)):
+            if sorted_cf[i] - sorted_cf[i - 1] > 2:
+                if len(cur_phase) >= 3:
+                    phases.append((foot_name, cur_phase))
+                cur_phase = []
+            cur_phase.append(sorted_cf[i])
+        if len(cur_phase) >= 3:
+            phases.append((foot_name, cur_phase))
+
+    _log(f"  [FootContact] Contact phases found: {len(phases)}")
+
+    if not phases:
+        return ret_locs
+
+    # Compute per-frame world-space corrections
+    root_name = list(ret_locs.keys())[0]
+    original = {f: ret_locs[root_name][f].copy() for f in frames}
+
+    all_corrections = {f: np.zeros(3) for f in frames}
+    correction_weights = {f: 0.0 for f in frames}
+
+    for foot_name, phase in phases:
+        locked_pos = foot_pos[foot_name][phase[0]]
+        for f in phase:
+            current_pos = foot_pos[foot_name][f]
+            correction = locked_pos - current_pos
+            all_corrections[f] = all_corrections[f] + correction
+            correction_weights[f] += 1.0
+
+    # Average corrections where both feet contact
+    for f in frames:
+        if correction_weights[f] > 0:
+            all_corrections[f] = all_corrections[f] / correction_weights[f]
+
+    # Smooth corrections
+    _smooth_contact_correction(all_corrections, frames, window=4)
+
+    # Apply
+    applied = 0
+    for f in frames:
+        if f in all_corrections:
+            ret_locs[root_name][f] = original[f] + all_corrections[f]
+            applied += 1
+
+    _log(f"  [FootContact] Corrected {applied} frames")
+    return ret_locs
+
+
+# ============================================================================
 # Public API
 # ============================================================================
 
@@ -881,7 +1091,13 @@ def export_kimodo_fbx(
         if len(ret_rots) == 0:
             _log("WARNING: No bone pairs matched — FBX will have no animation!")
 
-        # 4. Apply to FBX scene
+        # 4. Foot-contact root correction (reduce sliding)
+        frames_range = range(src_skel.frame_start, src_skel.frame_end + 1)
+        correct_root_with_foot_contact(
+            tgt_skel, ret_rots, ret_locs, SOMA_TO_MIXAMO, frames_range,
+        )
+
+        # 5. Apply to FBX scene
         apply_animation_to_scene(
             scene, tgt_skel, ret_rots, ret_locs,
             src_skel.frame_start, src_skel.frame_end,
