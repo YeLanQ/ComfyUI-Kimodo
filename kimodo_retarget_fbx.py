@@ -463,8 +463,6 @@ def _skeleton_height(skel: SkeletonData) -> float:
     for _, bone in skel.bones.items():
         if any(k in bone.name.lower() for k in kw):
             h = bone.head[1]
-            if abs(h) < 1e-6:
-                continue
             y_min, y_max = min(y_min, h), max(y_max, h)
             found = True
     return (y_max - y_min) if found and y_max > y_min else 1.0
@@ -1008,10 +1006,11 @@ def correct_root_with_foot_contact(
     correction_weights = {f: 0.0 for f in frames}
 
     for foot_name, phase in phases:
-        locked_pos = foot_pos[foot_name][phase[0]]
+        locked_xz = foot_pos[foot_name][phase[0]].copy()
+        locked_xz[1] = 0.0  # lock Y to ground plane, not to floating contact-start height
         for f in phase:
             current_pos = foot_pos[foot_name][f]
-            correction = locked_pos - current_pos
+            correction = locked_xz - current_pos
             all_corrections[f] = all_corrections[f] + correction
             correction_weights[f] += 1.0
 
