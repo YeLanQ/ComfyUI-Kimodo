@@ -1,0 +1,649 @@
+{
+  "id": "kimodo-basic-workflow",
+  "revision": 1,
+  "last_node_id": 55,
+  "last_link_id": 61,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "Kimodo_LoadModel",
+      "pos": [
+        -113.76885347389486,
+        85.19273994878502
+      ],
+      "size": [
+        449.1875,
+        167.59375
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "model",
+          "type": "KIMODO_MODEL",
+          "links": [
+            10,
+            13
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "Kimodo_LoadModel"
+      },
+      "widgets_values": [
+        "Kimodo-SOMA-RP-v1",
+        "base_model",
+        "LLM2Vec-Meta-Llama-3-8B-Instruct-mntp-supervised"
+      ]
+    },
+    {
+      "id": 5,
+      "type": "Kimodo_Preview",
+      "pos": [
+        955.700747515282,
+        -89.01596584852236
+      ],
+      "size": [
+        280,
+        180
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 4,
+      "inputs": [
+        {
+          "name": "motion",
+          "type": "KIMODO_MOTION",
+          "link": 14
+        }
+      ],
+      "outputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "links": [
+            19
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "Kimodo_Preview"
+      },
+      "widgets_values": [
+        0,
+        0,
+        512
+      ]
+    },
+    {
+      "id": 15,
+      "type": "PreviewImage",
+      "pos": [
+        1342.2188490549381,
+        -88.47288224993528
+      ],
+      "size": [
+        225,
+        246
+      ],
+      "flags": {},
+      "order": 11,
+      "mode": 4,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 19
+        }
+      ],
+      "outputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "PreviewImage"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 7,
+      "type": "Kimodo_SaveNPZ",
+      "pos": [
+        1584.5356285712423,
+        -82.1248509292713
+      ],
+      "size": [
+        280,
+        107.84375
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 4,
+      "inputs": [
+        {
+          "name": "motion",
+          "type": "KIMODO_MOTION",
+          "link": 16
+        }
+      ],
+      "outputs": [
+        {
+          "name": "file_path",
+          "type": "STRING",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "Kimodo_SaveNPZ"
+      },
+      "widgets_values": [
+        "kimodo/motion"
+      ]
+    },
+    {
+      "id": 8,
+      "type": "Kimodo_ExportBVH",
+      "pos": [
+        1591.1828558595778,
+        87.03746185604285
+      ],
+      "size": [
+        280,
+        139.84375
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "motion",
+          "type": "KIMODO_MOTION",
+          "link": 17
+        }
+      ],
+      "outputs": [
+        {
+          "name": "file_path",
+          "type": "STRING",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "Kimodo_ExportBVH"
+      },
+      "widgets_values": [
+        "kimodo/motion",
+        0
+      ]
+    },
+    {
+      "id": 51,
+      "type": "Kimodo_ExportFBX",
+      "pos": [
+        1583.3837907190784,
+        288.0367419733991
+      ],
+      "size": [
+        294.8125,
+        268.125
+      ],
+      "flags": {},
+      "order": 12,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "motion",
+          "type": "KIMODO_MOTION",
+          "link": 61
+        }
+      ],
+      "outputs": [
+        {
+          "name": "file_path",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "Kimodo_ExportFBX"
+      },
+      "widgets_values": [
+        "fbx/mixamo.fbx",
+        "kimodo_fbx/motion",
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "id": 14,
+      "type": "Kimodo_Preview3D",
+      "pos": [
+        747.0932807737383,
+        366.80669221755363
+      ],
+      "size": [
+        512,
+        582
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "motion",
+          "type": "KIMODO_MOTION",
+          "link": 18
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "Node name for S&R": "Kimodo_Preview3D"
+      },
+      "widgets_values": [
+        0,
+        ""
+      ]
+    },
+    {
+      "id": 2,
+      "type": "Kimodo_TextEncode",
+      "pos": [
+        -30.78811246143709,
+        308.72013123936273
+      ],
+      "size": [
+        366.1875,
+        139.59375
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "KIMODO_MODEL",
+          "link": 13
+        }
+      ],
+      "outputs": [
+        {
+          "name": "conditioning",
+          "type": "KIMODO_COND",
+          "links": [
+            11
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "Kimodo_TextEncode"
+      },
+      "widgets_values": [
+        "一段街舞动作"
+      ]
+    },
+    {
+      "id": 50,
+      "type": "Kimodo_CurveToPoints",
+      "pos": [
+        -535.9657387240094,
+        526.4376171022659
+      ],
+      "size": [
+        360,
+        394
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 4,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "points",
+          "type": "STRING",
+          "links": [
+            54
+          ]
+        }
+      ],
+      "properties": {
+        "curve_json": "[{\"x\":0,\"y\":0,\"z\":0},{\"x\":0.7111446401239165,\"y\":0.19424225247417137,\"z\":5.188895812309252},{\"x\":2.8898566945046813,\"y\":4.137263314706704,\"z\":4.049407842347159},{\"x\":3.1472461542126005,\"y\":4.60647028910263,\"z\":-0.6784904144380803},{\"x\":3.6443123625785594,\"y\":0.38479024722269095,\"z\":-3.220661052059254}]"
+      },
+      "widgets_values": [
+        16,
+        "",
+        "[{\"x\":0,\"y\":0,\"z\":0},{\"x\":0.7111446401239165,\"y\":0.19424225247417137,\"z\":5.188895812309252},{\"x\":2.8898566945046813,\"y\":4.137263314706704,\"z\":4.049407842347159},{\"x\":3.1472461542126005,\"y\":4.60647028910263,\"z\":-0.6784904144380803},{\"x\":3.6443123625785594,\"y\":0.38479024722269095,\"z\":-3.220661052059254}]"
+      ]
+    },
+    {
+      "id": 16,
+      "type": "Kimodo_MotionPath",
+      "pos": [
+        -58.0158866367011,
+        512.4320117092861
+      ],
+      "size": [
+        384.625,
+        323.59375
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 4,
+      "inputs": [
+        {
+          "name": "points",
+          "type": "STRING",
+          "widget": {
+            "name": "points"
+          },
+          "link": 54
+        }
+      ],
+      "outputs": [
+        {
+          "name": "constraints_json",
+          "type": "STRING",
+          "links": [
+            21
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "Kimodo_MotionPath"
+      },
+      "widgets_values": [
+        "",
+        8,
+        0,
+        90,
+        true,
+        true,
+        0
+      ]
+    },
+    {
+      "id": 17,
+      "type": "Kimodo_LoadMotion",
+      "pos": [
+        30.425782656664442,
+        -196.24301721958835
+      ],
+      "size": [
+        270,
+        215.4375
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 4,
+      "inputs": [
+        {
+          "name": "skeleton",
+          "shape": 7,
+          "type": "KIMODO_SKELETON",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "motion",
+          "type": "KIMODO_MOTION",
+          "links": [
+            20
+          ]
+        },
+        {
+          "name": "skeleton_data",
+          "type": "KIMODO_SKELETON",
+          "links": null
+        },
+        {
+          "name": "summary",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "Kimodo_LoadMotion"
+      },
+      "widgets_values": [
+        "motion/motion_20260624_060105_7f57b334.bvh",
+        0,
+        ""
+      ]
+    },
+    {
+      "id": 9,
+      "type": "Kimodo_Sampler",
+      "pos": [
+        419.03463710555593,
+        80.54092062298645
+      ],
+      "size": [
+        270,
+        379.84375
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "KIMODO_MODEL",
+          "link": 10
+        },
+        {
+          "name": "conditioning",
+          "type": "KIMODO_COND",
+          "link": 11
+        },
+        {
+          "name": "existing_motion",
+          "shape": 7,
+          "type": "KIMODO_MOTION",
+          "link": 20
+        },
+        {
+          "name": "constraints_json",
+          "shape": 7,
+          "type": "STRING",
+          "widget": {
+            "name": "constraints_json"
+          },
+          "link": 21
+        }
+      ],
+      "outputs": [
+        {
+          "name": "motion",
+          "type": "KIMODO_MOTION",
+          "links": [
+            14,
+            16,
+            17,
+            18,
+            60
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "Kimodo_Sampler"
+      },
+      "widgets_values": [
+        5,
+        1463335646,
+        "increment",
+        1,
+        100,
+        "",
+        "new",
+        30,
+        0
+      ]
+    },
+    {
+      "id": 55,
+      "type": "Kimodo_PostProcess",
+      "pos": [
+        962.0316625967388,
+        188.9714281331781
+      ],
+      "size": [
+        270,
+        103.59375
+      ],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "motion",
+          "type": "KIMODO_MOTION",
+          "link": 60
+        }
+      ],
+      "outputs": [
+        {
+          "name": "motion",
+          "type": "KIMODO_MOTION",
+          "links": [
+            61
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "Kimodo_PostProcess"
+      },
+      "widgets_values": [
+        0.15
+      ]
+    }
+  ],
+  "links": [
+    [
+      10,
+      1,
+      0,
+      9,
+      0,
+      "KIMODO_MODEL"
+    ],
+    [
+      11,
+      2,
+      0,
+      9,
+      1,
+      "KIMODO_COND"
+    ],
+    [
+      13,
+      1,
+      0,
+      2,
+      0,
+      "KIMODO_MODEL"
+    ],
+    [
+      14,
+      9,
+      0,
+      5,
+      0,
+      "KIMODO_MOTION"
+    ],
+    [
+      16,
+      9,
+      0,
+      7,
+      0,
+      "KIMODO_MOTION"
+    ],
+    [
+      17,
+      9,
+      0,
+      8,
+      0,
+      "KIMODO_MOTION"
+    ],
+    [
+      18,
+      9,
+      0,
+      14,
+      0,
+      "KIMODO_MOTION"
+    ],
+    [
+      19,
+      5,
+      0,
+      15,
+      0,
+      "IMAGE"
+    ],
+    [
+      20,
+      17,
+      0,
+      9,
+      2,
+      "KIMODO_MOTION"
+    ],
+    [
+      21,
+      16,
+      0,
+      9,
+      3,
+      "STRING"
+    ],
+    [
+      54,
+      50,
+      0,
+      16,
+      0,
+      "STRING"
+    ],
+    [
+      60,
+      9,
+      0,
+      55,
+      0,
+      "KIMODO_MOTION"
+    ],
+    [
+      61,
+      55,
+      0,
+      51,
+      0,
+      "KIMODO_MOTION"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.6414563951177663,
+      "offset": [
+        734.1851119116396,
+        404.3246335756071
+      ]
+    },
+    "frontendVersion": "1.45.19",
+    "VHS_latentpreview": false,
+    "VHS_latentpreviewrate": 0,
+    "VHS_MetadataImage": true,
+    "VHS_KeepIntermediate": true
+  },
+  "version": 0.4
+}
